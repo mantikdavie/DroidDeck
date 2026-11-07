@@ -108,7 +108,7 @@ internal fun GamesDialogs(a: FrontEndActions, games: List<Library.SteamGame>) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val st = GamesDialogState
-    if (st.adding) ExePickerDialog(
+    if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY && st.adding) ExePickerDialog(
         stringResource(R.string.games_add_title),
         onAddAll = { dir, showHidden ->
             st.summary = emptyList<com.droiddeck.launcher.frontend.AddedGames.Game>() to 0
@@ -130,7 +130,7 @@ internal fun GamesDialogs(a: FrontEndActions, games: List<Library.SteamGame>) {
         onPick = { a.onAddGameExe(it.path) },
         onDismiss = { st.adding = false },
     )
-    st.summary?.let { (added, already) ->
+    st.summary?.takeUnless { com.droiddeck.launcher.BuildConfig.STEAM_ONLY }?.let { (added, already) ->
         AddedGamesSummaryDialog(added, already, checking = st.checking, onOpen = { folder, uncertain, preview ->
             st.behindEditor = added to already
             st.editing = EditRequest(folder, openTarget = uncertain, fromSummary = true, preview = preview)
@@ -142,11 +142,11 @@ internal fun GamesDialogs(a: FrontEndActions, games: List<Library.SteamGame>) {
     st.steamArt?.let { game ->
         SteamGameArtEditor(games.firstOrNull { it.appId == game.appId && it.library != Library.ADDED } ?: game, onClose = { st.steamArt = null }, onChanged = { a.onSteamGameArtChanged(game.appId) })
     }
-    st.storeArt?.let { game ->
+    st.storeArt?.takeUnless { com.droiddeck.launcher.BuildConfig.STEAM_ONLY }?.let { game ->
         val folder = game.gameFiles?.path
         if (folder != null) StoreGameArtEditor(folder, game.name, onClose = { st.storeArt = null }, onChanged = { a.onAddedGamesChanged(listOf(folder)) })
     }
-    st.editing?.let { request ->
+    st.editing?.takeUnless { com.droiddeck.launcher.BuildConfig.STEAM_ONLY }?.let { request ->
         AddedGameEditor(
             request,
             onBack = { st.behindEditor?.let { st.summary = it }; st.behindEditor = null },
@@ -159,6 +159,7 @@ internal fun GamesDialogs(a: FrontEndActions, games: List<Library.SteamGame>) {
 
 @Composable
 internal fun AddGameButton(onClick: () -> Unit) {
+    if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) return
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
     val src = remember { MutableInteractionSource() }

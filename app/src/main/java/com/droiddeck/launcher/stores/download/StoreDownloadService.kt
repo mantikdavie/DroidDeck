@@ -16,6 +16,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import com.droiddeck.launcher.FrontEndActivity
+import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.R
 import com.droiddeck.launcher.core.DeviceSupport
 import com.droiddeck.launcher.stores.StoresState
@@ -38,6 +39,10 @@ class StoreDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (BuildConfig.STEAM_ONLY) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         instance = this
         startForegroundCompat(build())
         val key = intent?.getStringExtra(EXTRA_KEY)
@@ -195,6 +200,7 @@ class StoreDownloadService : Service() {
         private fun openDownloads(context: Context, code: Int) = openPage(context, "stores:downloads", code)
 
         fun start(context: Context) {
+            if (BuildConfig.STEAM_ONLY) return
             StoresState.latestDownloads.filter { it.state == DownloadState.RUNNING }.forEach { active.add(it.key) }
             try {
                 val app = context.applicationContext

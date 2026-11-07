@@ -11,17 +11,25 @@ object GameLaunchIntent {
 
     fun accepts(action: String?): Boolean = action == Intent.ACTION_VIEW || action == ACTION || action == GAMENATIVE_ACTION
 
-    fun read(context: Context, intent: Intent): String? = when (intent.action) {
-        Intent.ACTION_VIEW -> GameFiles.readIntent(context, intent)
-        ACTION, GAMENATIVE_ACTION -> readId(intent)
-        else -> null
+    fun read(context: Context, intent: Intent): String? {
+        if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY && !steamSource(intent)) return null
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> GameFiles.readIntent(context, intent)
+            ACTION, GAMENATIVE_ACTION -> readId(intent)
+            else -> null
+        }
     }
+
+    @Suppress("DEPRECATION")
+    private fun steamSource(intent: Intent): Boolean = runCatching {
+        val source = intent.extras?.get(EXTRA_GAME_SOURCE)
+        source == null || (source is String && source.equals("STEAM", ignoreCase = true))
+    }.getOrDefault(false)
 
     @Suppress("DEPRECATION")
     internal fun readId(intent: Intent): String? = runCatching {
         if (intent.action != ACTION && intent.action != GAMENATIVE_ACTION) return null
-        val source = intent.extras?.get(EXTRA_GAME_SOURCE)
-        if (source != null && (source !is String || !source.equals("STEAM", ignoreCase = true))) return null
+        if (!steamSource(intent)) return null
         val id = when (val value = intent.extras?.get(EXTRA_APP_ID)) {
             is Int -> value.takeIf { it > 0 }?.toString()
             is String -> value.takeIf(GameLaunchLink::validId)

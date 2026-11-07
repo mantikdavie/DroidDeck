@@ -47,6 +47,7 @@ class LibraryVisibilityTest {
     private var generation by mutableIntStateOf(0)
 
     @Before fun prepare() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         StoreAccounts.keys = CredentialCipher.KeyProvider { SecretKeySpec(ByteArray(32) { 7 }, "AES") }
         StoreAccounts.keystoreFailed = false
         ctx.getSharedPreferences("session", 0).edit().clear().commit()

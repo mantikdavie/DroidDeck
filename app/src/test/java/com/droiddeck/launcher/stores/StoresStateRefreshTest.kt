@@ -71,6 +71,7 @@ class StoresStateRefreshTest {
     }
 
     @Test fun overlappingRefreshesShareOneMorePass() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val opens = AtomicInteger()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -92,6 +93,7 @@ class StoresStateRefreshTest {
     }
 
     @Test fun aRequestMadeDuringAFailedPassStillRuns() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         StoreAccounts.keys = opening {
@@ -113,6 +115,7 @@ class StoresStateRefreshTest {
     }
 
     @Test fun aFailedRefreshDoesNotBlockTheNextOne() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val failed = CountDownLatch(1)
         StoreAccounts.keys = opening { failed.countDown(); throw Error("keystore died") }
         StoresState.refresh(app)

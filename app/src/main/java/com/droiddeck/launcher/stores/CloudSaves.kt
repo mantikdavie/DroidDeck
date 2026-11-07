@@ -432,6 +432,7 @@ object CloudSaves {
     }
 
     fun uploadAllDirty(context: Context, trigger: String, running: Boolean = com.droiddeck.launcher.session.SessionState.running) {
+        if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) return
         if (trigger == "recovery" && running) return
         for ((store, id) in dirty(context)) uploadDirty(context, store, id, trigger)
     }

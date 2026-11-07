@@ -122,11 +122,12 @@ internal class LibraryEntry(
 
 internal fun libraryEntries(
     games: List<Library.SteamGame>, owned: Map<Store, List<CatalogItem>>, installedStore: Set<String>,
+    steamOnly: Boolean = false,
 ): List<LibraryEntry> {
     val claimed = HashSet<String>()
     val out = ArrayList<LibraryEntry>()
     for (g in games.sortedBy { it.library == Library.XBOX_CLOUD }) {
-        if (g.library == Library.EPIC_LAUNCHER) continue
+        if (g.library == Library.EPIC_LAUNCHER || !Library.allowedInBuild(g, steamOnly)) continue
         val storeKey = g.storeId?.let { "${g.source}:$it" }
         val item = storeKey?.let { k -> Store.byId(g.source)?.let { st -> owned[st]?.firstOrNull { it.key == k } } }
         if (storeKey != null) {
@@ -136,7 +137,7 @@ internal fun libraryEntries(
         out += LibraryEntry(GameRef.key(g), g.source, g.name, g, item,
             installed = g.library != Library.XBOX_CLOUD || storeKey in installedStore)
     }
-    for (store in Store.entries) for (item in owned[store].orEmpty()) {
+    if (!steamOnly) for (store in Store.entries) for (item in owned[store].orEmpty()) {
         if (!claimed.add(item.key)) continue
         out += LibraryEntry(GameRef.key(item), store.id, item.title, null, item, installed = item.key in installedStore)
     }
@@ -212,17 +213,19 @@ internal fun LibraryPage(s: FrontEndState, a: FrontEndActions, selected: String,
     val ff = LocalFrontFocus.current
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val inputMode = androidx.compose.ui.platform.LocalInputModeManager.current
-    LaunchedEffect(Unit) { StoresState.refresh(ctx) }
+    LaunchedEffect(Unit) { if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) StoresState.refresh(ctx) }
     remember { LibraryDisplay.load(ctx) }
-    val stores = s.gameStoresEnabled && !s.shortcutPicker
+    val stores = !com.droiddeck.launcher.BuildConfig.STEAM_ONLY && s.gameStoresEnabled && !s.shortcutPicker
     val signedIn = Store.entries.filter { StoresState.isSignedIn(it) }
     LaunchedEffect(stores, signedIn) { if (stores) signedIn.forEach { StoresState.loadLibrary(ctx, it) } }
     val owned = if (stores) signedIn.associateWith { StoresState.library[it].orEmpty() } else emptyMap()
     val installedStore = StoresState.installed.map { it.key }.toSet()
     val syncing = if (stores) signedIn.mapNotNull { st -> StoresState.status[st]?.let { st to it } } else emptyList()
-    val cloudRows = rememberXboxCloudRows(s)
-    val all = remember(s.steamGames, cloudRows, owned, installedStore) { libraryEntries(s.steamGames + cloudRows, owned, installedStore) }
-    LaunchedEffect(Unit) { XboxLibraryFilter.load(ctx) }
+    val cloudRows = if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) emptyList() else rememberXboxCloudRows(s)
+    val all = remember(s.steamGames, cloudRows, owned, installedStore) {
+        libraryEntries(s.steamGames + cloudRows, owned, installedStore, com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
+    }
+    LaunchedEffect(Unit) { if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) XboxLibraryFilter.load(ctx) }
     var showUninstalled by remember(LibraryView.ownedRequest) { mutableStateOf(SessionPrefs.libraryShowUninstalled(ctx)) }
     var collectionShows by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     val setShowUninstalled = { show: Boolean ->
@@ -306,7 +309,8 @@ internal fun LibraryPage(s: FrontEndState, a: FrontEndActions, selected: String,
     val visible = installedFirst(ordered)
     val split = visible.count { it.installed }.takeIf { it in 1 until visible.size } ?: 0
 
-    val open = selected.takeIf { it.startsWith("app:") }
+    val open = selected.takeIf { it.startsWith("app:") &&
+        (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY || all.any { entry -> entry.key == it }) }
     val back = { onSelect("games") }
     BackHandler(enabled = open == null && LibraryView.query.isNotEmpty()) { LibraryView.query = "" }
     BackHandler(enabled = open != null) { back() }
@@ -373,7 +377,7 @@ internal fun LibraryPage(s: FrontEndState, a: FrontEndActions, selected: String,
         grid = {
             LibraryGrid(
                 s, a, grid, visible, split, visible.size, sources, source, sizesPending, syncing,
-                showUninstalled = listUninstalled.takeIf { !s.shortcutPicker },onShowUninstalled = setShowUninstalled,
+                showUninstalled = listUninstalled.takeIf { stores },onShowUninstalled = setShowUninstalled,
                 hiddenUninstalled = hiddenUninstalled,
                 onSource = { LibraryView.source = it },
                 onCycle = { step ->

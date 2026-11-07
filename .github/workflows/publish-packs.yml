@@ -35,6 +35,40 @@ jobs:
           RUN: ${{ inputs.run_id }}
         run: gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n droiddeck-packs -D packs
 
+      - name: Validate the pack profile
+        id: pack-profile
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          profiles = {
+              'steam-only': ('proot', 'directaudio', 'tracking', 'powervr'),
+              'all-stores': ('proot', 'directaudio', 'tracking', 'xbox', 'comet', 'butler', 'powervr'),
+          }
+          root = Path('packs')
+          data = json.loads((root / 'profile.json').read_text())
+          profile = data.get('profile')
+          if data.get('version') != 1 or profile not in profiles:
+              raise SystemExit('Invalid add-on pack profile')
+          names = profiles[profile]
+          if set(data.get('packs', {})) != set(names):
+              raise SystemExit('Incomplete or unexpected pack profile')
+          if {path.name for path in root.glob('*.tar.zst')} != {name + '.tar.zst' for name in names}:
+              raise SystemExit('Pack files do not match the declared profile')
+          for name in names:
+              path = root / (name + '.tar.zst')
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit('Pack is not a regular file: ' + name)
+              checksum = hashlib.sha256()
+              with path.open('rb') as source:
+                  for block in iter(lambda: source.read(1024 * 1024), b''):
+                      checksum.update(block)
+              if data['packs'][name] != {'sha256': checksum.hexdigest(), 'size': path.stat().st_size}:
+                  raise SystemExit('Pack checksum or size mismatch: ' + name)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('names=' + ' '.join(names) + '\n')
+          PY
+
       - uses: actions/create-github-app-token@v2
         id: components-token
         with:
@@ -48,6 +82,7 @@ jobs:
           GH_TOKEN: ${{ steps.components-token.outputs.token }}
           REPO: Droid-Deck/DroidDeck-Components
           BUILD_RUN: ${{ inputs.run_id || github.run_id }}
+          PACK_NAMES: ${{ steps.pack-profile.outputs.names }}
         run: |
           set -euo pipefail
           published_digest() {
@@ -55,7 +90,7 @@ jobs:
               jq -r --arg n "$2" '.assets // [] | .[] | select(.name == $n) | .digest // empty'
           }
           commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" --jq .head_sha 2>/dev/null || echo "$GITHUB_SHA")
-          for name in proot directaudio tracking xbox comet butler powervr; do
+          for name in $PACK_NAMES; do
             file="packs/$name.tar.zst"
             [ -f "$file" ] || { echo "::error::$name.tar.zst is missing from Build APK run $BUILD_RUN"; exit 1; }
             sha=$(sha256sum "$file" | cut -d' ' -f1)

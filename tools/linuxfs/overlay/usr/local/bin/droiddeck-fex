@@ -715,8 +715,9 @@ def launch(command, env, mode, decide=None):
 def game_environment(env, command):
     try:
         game_env = runpy.run_path(os.path.join(BIN_DIR, "droiddeck-game-env"))
-        env = game_env["game_gpu"](env)
         app = game_env["game_id"](env) or env.get("SteamAppId") or env.get("SteamGameId")
+        actual_game = bool(app and re.fullmatch(r"-?[0-9]+", str(app)) and int(app) != 0)
+        env = game_env["game_gpu"](env, restore_session_gl=actual_game)
         if not app:
             return env
         fixes = {}

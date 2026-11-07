@@ -719,7 +719,23 @@ if x64_gpu; then
   {
     echo "export FEX_THUNKCONFIG='$X64_HOME/thunks.json'"
     echo "unset LIBGL_ALWAYS_SOFTWARE LIBGL_DRI3_DISABLE GALLIUM_DRIVER"
+    if [ "${DROIDDECK_GAME_GL_SAVED:-0}" = 1 ]; then
+      for v in GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE LIBGL_ALWAYS_SOFTWARE; do
+        saved=DROIDDECK_GAME_GL_$v
+        if declare -p "$saved" >/dev/null 2>&1; then
+          val=${!saved}
+          printf "export %s='%s'\n" "$v" "${val//\'/\'\\\'\'}"
+        else
+          printf 'unset %s\n' "$v"
+        fi
+        printf 'unset %s\n' "$saved"
+      done
+      echo "unset DROIDDECK_GAME_GL_SAVED"
+    fi
     for v in $gpu_vars; do
+      if [ "${DROIDDECK_GAME_GL_SAVED:-0}" = 1 ]; then
+        case $v in GALLIUM_DRIVER|MESA_LOADER_DRIVER_OVERRIDE) continue ;; esac
+      fi
       eval "val=\${$v-}"; [ -n "$val" ] && printf "export %s='%s'\n" "$v" "${val//\'/\'\\\'\'}"
     done
   } > "$X64_HOME/game-gpu.env"

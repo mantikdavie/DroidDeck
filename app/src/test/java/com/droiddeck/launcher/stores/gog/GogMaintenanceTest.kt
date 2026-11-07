@@ -290,6 +290,7 @@ class GogMaintenanceTest {
     }
 
     @Test fun interruptedExternalPatchRestoresRecoveryWithoutExecutingAgain() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val app = RuntimeEnvironment.getApplication()
         val folder = File(StoreInstallRoot.storeDir(StoreInstallRoot.internalRoot(app), Store.GOG), "Patch recovery").apply { mkdirs() }
         try {
@@ -329,6 +330,7 @@ class GogMaintenanceTest {
     }
 
     @Test fun pauseBeforeInstallerClaimCannotStartExternalApplication() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val app = RuntimeEnvironment.getApplication()
         val ready = java.util.concurrent.CountDownLatch(1)
         val proceed = java.util.concurrent.CountDownLatch(1)

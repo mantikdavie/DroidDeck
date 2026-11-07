@@ -2,6 +2,11 @@
 set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+case "${DROIDDECK_STEAM_ONLY:-true}" in
+    true|1) export DROIDDECK_STEAM_ONLY=true ;;
+    false|0) export DROIDDECK_STEAM_ONLY=false ;;
+    *) echo "DROIDDECK_STEAM_ONLY must be true or false" >&2; exit 1 ;;
+esac
 if tree_status=$(git -C "${repo_root}" status --porcelain 2>/dev/null); then
     if [[ -n "${tree_status}" ]]; then
         export DROIDDECK_BUILD_TREE_STATE=dirty
@@ -229,11 +234,20 @@ cached() {
     echo "${out}"
 }
 
+extract_zstd() {
+    local archive_tar
+    archive_tar=$(mktemp "${staging_dir}/archive.XXXXXX")
+    # BSD tar can stop at the end marker before zstd drains, causing SIGPIPE under pipefail.
+    zstd -dc "$1" > "${archive_tar}"
+    tar -xf "${archive_tar}" -C "$2"
+    rm -f "${archive_tar}"
+}
+
 if [[ -f "${repo_root}/tools/gamescope/release.env" ]]; then
     . "${repo_root}/tools/gamescope/release.env"
     gamescope_archive=$(cached "${GAMESCOPE_SHA256}" gamescope.tzst \
         bash -c 'gh release download "$0" -R "$1" -p gamescope.tzst -O "$out"' "${GAMESCOPE_TAG}" "${GAMESCOPE_REPO:-${github_repo}}")
-    zstd -dc "${gamescope_archive}" | tar -xf - -C "${linuxfs_dir}"
+    extract_zstd "${gamescope_archive}" "${linuxfs_dir}"
     test -f "${linuxfs_dir}/usr/local/bin/gamescope"
 fi
 
@@ -251,7 +265,7 @@ if [[ -f "${repo_root}/tools/droiddeck-esync/release.env" ]]; then
         bash -c 'gh release download "$0" -R "$2" -p "$1" -O "$out"' "${SYNC_BUNDLE_TAG}" "${SYNC_BUNDLE_ASSET}" "${SYNC_BUNDLE_REPO}")
     rm -rf "${sync_assets}"
     mkdir -p "${sync_assets}"
-    zstd -dc "${sync_archive}" | tar -xf - -C "${sync_assets}"
+    extract_zstd "${sync_archive}" "${sync_assets}"
     test -f "${sync_assets}/index.json"
     test -f "${sync_assets}/index.json.sig"
     sync_index=$(mktemp)
@@ -295,7 +309,7 @@ while read -r package_sha256 package_url; do
     [[ -n "${package_url}" ]] || continue
     package_archive=$(cached "${package_sha256}" "$(basename "${package_url}")" \
         bash -c 'curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 -o "$out" "$0"' "${package_url}")
-    zstd -dc "${package_archive}" | tar -xf - -C "${mango_pkgs}"
+    extract_zstd "${package_archive}" "${mango_pkgs}"
 done < <(grep -v '^#' "${repo_root}/tools/mangoapp/packages.txt")
 install -m644 "${mango_pkgs}/usr/bin/mangoapp" "${mango_dir}/mangoapp"
 for library in libfmt.so.10 libspdlog.so.1.13 libglfw.so.3 libtraceevent.so.1; do
@@ -313,7 +327,7 @@ while read -r package_sha256 package_url; do
     [[ -n "${package_url}" ]] || continue
     package_archive=$(cached "${package_sha256}" "$(basename "${package_url}")" \
         bash -c 'curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 -o "$out" "$0"' "${package_url}")
-    zstd -dc "${package_archive}" | tar -xf - -C "${pw_pkgs}"
+    extract_zstd "${package_archive}" "${pw_pkgs}"
 done < <(grep -v '^#' "${repo_root}/tools/pipewire/packages.txt")
 "${repo_root}/tools/pipewire/assemble.sh" "${pw_pkgs}" "${linuxfs_dir}/usr/local/lib/droiddeck-pipewire.tzst"
 
@@ -392,7 +406,7 @@ mkdir -p "${repo_root}/app/build/prepared-assets"
 mv "${staging_dir}/pulseaudio.tzst" "${repo_root}/app/build/prepared-assets/pulseaudio.tzst"
 
 gradle_rust_arg=""
-if [[ "${DROIDDECK_SKIP_RUST:-0}" == 1 ]]; then
+if [[ "${DROIDDECK_STEAM_ONLY}" == true || "${DROIDDECK_SKIP_RUST:-0}" == 1 ]]; then
     gradle_rust_arg="-PskipRust=true"
 else
     export PATH="${HOME}/.cargo/bin:${PATH}"
@@ -411,23 +425,25 @@ fi
 
 cd "${repo_root}"
 python3 tools/quest/build-driver.py "${NDK}"
-xbox_out="${linuxfs_dir}/usr/local/lib/droiddeck-xbox"
-xbox_key=$(inputs_hash "native-arm64-ubuntu24.04" tools/xbox)
-if ! restore_step xbox "${xbox_key}" "${xbox_out}"; then
-    bash tools/xbox/build-local.sh
-    save_step xbox "${xbox_key}" "${xbox_out}"
-fi
+if [[ "${DROIDDECK_STEAM_ONLY}" != true ]]; then
+    xbox_out="${linuxfs_dir}/usr/local/lib/droiddeck-xbox"
+    xbox_key=$(inputs_hash "native-arm64-ubuntu24.04" tools/xbox)
+    if ! restore_step xbox "${xbox_key}" "${xbox_out}"; then
+        bash tools/xbox/build-local.sh
+        save_step xbox "${xbox_key}" "${xbox_out}"
+    fi
 
-comet_out="${linuxfs_dir}/usr/local/lib/droiddeck-comet"
-comet_key=$(inputs_hash "${image_id}" tools/comet)
-if ! restore_step comet "${comet_key}" "${comet_out}"; then
-    DROIDDECK_BUILD_IMAGE="${image_name}" bash tools/comet/build-local.sh
-    save_step comet "${comet_key}" "${comet_out}"
+    comet_out="${linuxfs_dir}/usr/local/lib/droiddeck-comet"
+    comet_key=$(inputs_hash "${image_id}" tools/comet)
+    if ! restore_step comet "${comet_key}" "${comet_out}"; then
+        DROIDDECK_BUILD_IMAGE="${image_name}" bash tools/comet/build-local.sh
+        save_step comet "${comet_key}" "${comet_out}"
+    fi
 fi
 python3 tools/powervr/fetch.py
 bash tools/packs/build.sh app/build/packs
 python3 tools/release/runtime_inputs.py record
-./gradlew "${gradle_task}" --console=plain -PndkVersion="${ndk_version}" ${gradle_rust_arg}
+./gradlew "${gradle_task}" --console=plain -PndkVersion="${ndk_version}" -PsteamOnly="${DROIDDECK_STEAM_ONLY}" ${gradle_rust_arg}
 python3 tools/release/check_session_assets.py "app/build/outputs/apk/${build_variant}/app-${build_variant}.apk"
 python3 tools/release/runtime_inputs.py apk "app/build/outputs/apk/${build_variant}/app-${build_variant}.apk"
 
@@ -447,9 +463,11 @@ done
 
 readelf_path=$(find "${NDK}/toolchains/llvm/prebuilt" -name llvm-readelf | head -1)
 [[ -x "${readelf_path}" ]] || { echo "NDK llvm-readelf is missing" >&2; exit 1; }
-stores_check=()
-[[ "${DROIDDECK_SKIP_RUST:-0}" != 1 ]] || stores_check+=(--without-stores)
-python3 tools/release/check_android_libraries.py "${apk}" --readelf "${readelf_path}" "${stores_check[@]}"
+if [[ "${DROIDDECK_STEAM_ONLY}" == true || "${DROIDDECK_SKIP_RUST:-0}" == 1 ]]; then
+    python3 tools/release/check_android_libraries.py "${apk}" --readelf "${readelf_path}" --without-stores
+else
+    python3 tools/release/check_android_libraries.py "${apk}" --readelf "${readelf_path}"
+fi
 git diff --exit-code -- app/src/main/rust/stores/Cargo.lock
 
 build_tools=$(find "${sdk_dir}/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -1)

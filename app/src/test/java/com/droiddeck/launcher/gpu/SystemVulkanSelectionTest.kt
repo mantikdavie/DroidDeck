@@ -81,6 +81,24 @@ class SystemVulkanSelectionTest {
         })
     }
 
+    @Test fun renderNodeIdentityMustMatchTheSelectedHalFamily() {
+        val device = Files.createTempDirectory("system-vulkan-device").toFile()
+        try {
+            val uevent = File(device, "uevent")
+            uevent.writeText("DRIVER=pvrsrvkm\n")
+            assertTrue(SystemVulkanDriver.powerVrDevice(device, false))
+            assertFalse(SystemVulkanDriver.powerVrDevice(device, true))
+            uevent.writeText("DRIVER=sgpu\n")
+            assertFalse(SystemVulkanDriver.powerVrDevice(device, false))
+            assertTrue(SystemVulkanDriver.powerVrDevice(device, true))
+            uevent.writeText("DRIVER=exynos-drm\n")
+            assertFalse(SystemVulkanDriver.powerVrDevice(device, false))
+            assertFalse(SystemVulkanDriver.powerVrDevice(device, true))
+        } finally {
+            device.deleteRecursively()
+        }
+    }
+
     @Test fun renderNodesAreDiscoveredWithoutDirectoryListing() {
         for (minor in listOf(128, 129, 191)) {
             val expected = "/dev/dri/renderD$minor"

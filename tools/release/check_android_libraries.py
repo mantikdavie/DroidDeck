@@ -1,5 +1,6 @@
 """Validate the JNI entry points and Android ELF dependency closure in the actual APK."""
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -50,9 +51,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('apk')
     parser.add_argument('--readelf', default='readelf')
-    parser.add_argument('--without-stores', action='store_true')
+    store_mode = parser.add_mutually_exclusive_group()
+    store_mode.add_argument('--without-stores', dest='stores', action='store_false')
+    store_mode.add_argument('--with-stores', dest='stores', action='store_true')
+    parser.set_defaults(stores=None)
     args = parser.parse_args()
-    errors = check(args.apk, args.readelf, not args.without_stores)
+    if args.stores is None:
+        profile = os.environ.get('DROIDDECK_STEAM_ONLY', 'true').lower()
+        if profile not in ('true', 'false', '1', '0'):
+            parser.error('DROIDDECK_STEAM_ONLY must be true or false')
+        args.stores = profile in ('false', '0')
+    errors = check(args.apk, args.readelf, args.stores)
     if errors:
         parser.exit(1, '\n'.join(errors) + '\n')
     print('APK native exports and dependencies verified')

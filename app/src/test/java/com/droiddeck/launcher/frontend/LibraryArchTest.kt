@@ -47,6 +47,8 @@ class LibraryArchTest {
         val added = AddedGames.Game(folder, "Example", exe, "/g/Example.exe", "/g", 0x87654321L, (0x87654321L shl 32) or 0x02000000L, emptyList())
         val other = File(app.filesDir, "games/Other").apply { mkdirs() }
         val second = AddedGames.Game(other, "Other", File(other, "Other.exe"), "/g/Other.exe", "/g", 0x81234567L, (0x81234567L shl 32) or 0x02000000L, emptyList())
-        assertEquals(listOf("Example" to "internal", "Other" to Library.ADDED), Library.launchableGames(app, added = listOf(added, second), arch = "arm64").map { it.name to it.library })
+        val expected = listOf("Example" to "internal") +
+            if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) emptyList() else listOf("Other" to Library.ADDED)
+        assertEquals(expected, Library.launchableGames(app, added = listOf(added, second), arch = "arm64").map { it.name to it.library })
     }
 }

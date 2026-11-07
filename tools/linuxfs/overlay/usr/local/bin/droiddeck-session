@@ -319,6 +319,23 @@ if [ "${BL_VENUS:-0}" = 1 ] && [ -z "${BL_INSIDE:-}" ] && command -v vulkaninfo 
   fi
   unset bl_vn_info
 fi
+prepare_powervr_ui_gl() {
+  [ "${BL_POWERVR_SOFTWARE_GL:-0}" = 1 ] && [ "$mode" = steam ] && [ -z "${BL_INSIDE:-}" ] || return 0
+  local name saved
+  for name in GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE LIBGL_ALWAYS_SOFTWARE; do
+    saved=DROIDDECK_GAME_GL_$name
+    unset "$saved"
+    if declare -p "$name" >/dev/null 2>&1; then
+      printf -v "$saved" '%s' "${!name}"
+      export "$saved"
+    fi
+  done
+  export DROIDDECK_GAME_GL_SAVED=1
+  export GALLIUM_DRIVER=llvmpipe MESA_LOADER_DRIVER_OVERRIDE=swrast LIBGL_ALWAYS_SOFTWARE=1
+  echo "== PowerVR: Steam and Xwayland use software GL for correct colors; Vulkan stays on the selected driver"
+}
+prepare_powervr_ui_gl
+
 if [ "${BL_GAME_LOGS:-0}" = 1 ] && [ -z "${BL_INSIDE:-}" ] && [ -n "${BL_DEBUG_DIR:-}" ]; then
   (
     {
@@ -1351,7 +1368,11 @@ case $mode in
       export DISABLE_GAMESCOPE_WSI=1 LIBGL_KOPPER_DISABLE=true
       bl_steam_angle=gl
       bl_steam_presentation=(-cef-disable-gpu-compositing)
-      echo "== steam: system PowerVR uses OpenGL/DRI3 through Zink with software CEF compositing"
+      if [ "${BL_POWERVR_SOFTWARE_GL:-0}" = 1 ]; then
+        echo "== steam: system PowerVR uses software OpenGL with software CEF compositing"
+      else
+        echo "== steam: system PowerVR uses OpenGL/DRI3 through Zink with software CEF compositing"
+      fi
     elif [ "${BL_STEAM_SOFT_COMPOSITING:-}" = 1 ]; then
       bl_steam_presentation=(-cef-disable-gpu-compositing)
       echo "== steam: open driver pair - software CEF compositing, GPU raster"

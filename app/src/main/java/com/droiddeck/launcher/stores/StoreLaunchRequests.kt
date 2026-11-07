@@ -3,6 +3,7 @@ package com.droiddeck.launcher.stores
 import android.content.Context
 import android.os.FileObserver
 import android.util.Log
+import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.runtime.LinuxRuntime
 import java.io.File
 import org.json.JSONObject
@@ -37,7 +38,7 @@ object StoreLaunchRequests {
     }
 
     fun stop() {
-        com.droiddeck.launcher.stores.xbox.XboxRuntime.stop()
+        if (!BuildConfig.STEAM_ONLY) com.droiddeck.launcher.stores.xbox.XboxRuntime.stop()
         synchronized(lock) {
             observer?.stopWatching()
             observer = null
@@ -50,7 +51,23 @@ object StoreLaunchRequests {
         } catch (e: Exception) {
             return
         }
-        val reply = when (request.optString("op")) {
+        val reply = dispatch(app, request)
+        try {
+            val resp = File(dir(app), "resp").apply { mkdirs() }
+            val tmp = File(resp, file.name + ".tmp")
+            tmp.writeText(reply.toString())
+            tmp.renameTo(File(resp, file.name))
+        } catch (e: Exception) {
+            Log.w(TAG, "could not answer ${file.name}: ${e.message}")
+        }
+    }
+
+    internal fun dispatch(app: Context, request: JSONObject): JSONObject {
+        val operation = request.optString("op")
+        if (BuildConfig.STEAM_ONLY && operation != "open-url") {
+            return JSONObject().put("ok", false).put("reason", "steam-only")
+        }
+        return when (operation) {
             "xbox-released" -> {
                 com.droiddeck.launcher.stores.xbox.XboxRuntime.released(request.optString("lease"))
                 JSONObject().put("ok", true)
@@ -132,14 +149,6 @@ object StoreLaunchRequests {
                 else JSONObject().put("ok", false).put("reason", "no-account")
             }
             else -> JSONObject().put("ok", false).put("reason", "unknown-op")
-        }
-        try {
-            val resp = File(dir(app), "resp").apply { mkdirs() }
-            val tmp = File(resp, file.name + ".tmp")
-            tmp.writeText(reply.toString())
-            tmp.renameTo(File(resp, file.name))
-        } catch (e: Exception) {
-            Log.w(TAG, "could not answer ${file.name}: ${e.message}")
         }
     }
 }

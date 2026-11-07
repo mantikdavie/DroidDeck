@@ -2334,7 +2334,7 @@
     <string name="look_anime_edge_desc">Toon outlines plus sharpening.</string>
 
     <string name="gpuinfo_not_adreno">Not an Adreno GPU</string>
-    <string name="gpuinfo_powervr">System PowerVR driver: compatibility varies by device</string>
+    <string name="gpuinfo_powervr">Experimental: system PowerVR driver; compatibility varies by device</string>
     <string name="gpuinfo_xclipse">Experimental: RADV or the system Xclipse driver</string>
     <string name="gpu_system_powervr">System PowerVR</string>
     <string name="gpu_auto_system_hint">Uses the built-in drivers for this GPU</string>

@@ -51,6 +51,7 @@ class StoreRestorationTest {
     }
 
     @Test fun manageContentReportsItsResultWithoutComposingTheStoresPage() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val base = InstalledStoreGame(StoreGameSidecar(Store.XBOX, product.id, product.title, "game.exe"), File(ctx.cacheDir, "missing-xbox-manifest"))
         compose.mainClock.autoAdvance = false
         compose.setContent {

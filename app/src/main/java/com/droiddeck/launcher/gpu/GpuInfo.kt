@@ -63,7 +63,7 @@ data class GpuInfo(
             Support.TESTED -> "Supported"
             Support.UNTESTED -> when {
                 family == Family.POWERVR -> if (name.contains("Xclipse", ignoreCase = true)) "Experimental: RADV or the system Xclipse driver"
-                    else "System PowerVR driver: compatibility varies by device"
+                    else "Experimental: system PowerVR driver; compatibility varies by device"
                 family == Family.MALI_OTHER -> "Experimental: Mali through the phone's own driver (Venus)"
                 family.mali -> "Experimental: open Mali driver (test builds)"
                 isA850 -> "Experimental Adreno 850 support: requires compatible experimental display and game drivers; not verified on this device"
@@ -126,9 +126,9 @@ data class GpuInfo(
                     model > 0 -> "Adreno $model"
                     else -> "Adreno"
                 },
-                model = model, family = family, soc = soc,
+                model = model, family = family, soc = if (family == Family.POWERVR) SocNames.label() else soc,
                 oneUi8Gen2 = samsung && model == 740,
-                kgslName = raw.orEmpty(), modelSource = source, kgslChipId = chipId,
+                kgslName = raw.orEmpty(), modelSource = if (family == Family.POWERVR) "system_hal" else source, kgslChipId = chipId,
                 platformGpuModel = platformGpuModel,
                 verifiedDevice = adreno && verifiedOn(model, Build.MODEL),
             )

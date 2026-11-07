@@ -287,21 +287,29 @@ public final class LinuxRuntime {
     }
 
     private static void bindPowerVrGpuNode(Context context, List<String> cmd) {
-        if (new File("/dev/dri").list() != null) return;
         String node = SystemVulkanDriver.renderNodePath();
         if (node == null) return;
+        File base = new File(context.getCacheDir(), "powervr-drm/" + new File(node).getName());
+        bindPowerVrGpuNode(base, cmd, node, deviceNumbers(node), path -> new File(path).list() != null);
+    }
+
+    static void bindPowerVrGpuNode(File base, List<String> cmd, String node, String devNumbers,
+                                   java.util.function.Predicate<String> listable) {
         String name = new File(node).getName();
-        File dri = new File(context.getCacheDir(), "powervr-drm/" + name + "/dri");
-        try {
-            if (!dri.isDirectory() && !dri.mkdirs()) return;
-            new File(dri, name).createNewFile();
-        } catch (IOException e) {
-            android.util.Log.w("LinuxRuntime", "Cannot expose the PowerVR render node", e);
-            return;
+        if (!listable.test("/dev/dri")) {
+            File dri = new File(base, "dri");
+            try {
+                if (!dri.isDirectory() && !dri.mkdirs()) return;
+                new File(dri, name).createNewFile();
+            } catch (IOException e) {
+                android.util.Log.w("LinuxRuntime", "Cannot expose the PowerVR render node", e);
+                return;
+            }
+            bind(cmd, dri.getPath() + ":/dev/dri");
+            bind(cmd, node + ":" + node);
+            android.util.Log.i("LinuxRuntime", "PowerVR: exposing real " + name + " through a listable directory");
         }
-        bind(cmd, dri.getPath() + ":/dev/dri");
-        bind(cmd, node + ":" + node);
-        android.util.Log.i("LinuxRuntime", "PowerVR: exposing real " + name + " through a listable directory");
+        if (devNumbers != null) bindDrmClass(base, cmd, name, devNumbers, listable);
     }
 
     private static boolean unreadablePciDevice() {
@@ -389,19 +397,24 @@ public final class LinuxRuntime {
     }
 
     private static void bindDrmClass(File base, List<String> cmd, String node, String devNumbers) {
-        if (new File("/sys/class/drm").list() != null) return;
+        bindDrmClass(base, cmd, node, devNumbers, path -> new File(path).list() != null);
+    }
+
+    private static void bindDrmClass(File base, List<String> cmd, String node, String devNumbers,
+                                     java.util.function.Predicate<String> listable) {
+        if (listable.test("/sys/class/drm")) return;
         File drmClass = new File(base, "class");
         try {
             if (!drmClass.isDirectory() && !drmClass.mkdirs()) return;
             File[] old = drmClass.listFiles();
             if (old != null) for (File f : old) Files.deleteIfExists(f.toPath());
-            Os.symlink("/sys/dev/char/" + devNumbers, new File(drmClass, node).getPath());
-        } catch (IOException | ErrnoException e) {
+            Files.createSymbolicLink(new File(drmClass, node).toPath(), new File("/sys/dev/char/" + devNumbers).toPath());
+        } catch (IOException e) {
             return;
         }
         bind(cmd, drmClass.getPath() + ":/sys/class/drm");
         android.util.Log.i("LinuxRuntime", "hud: /sys/class/drm is not listable here; the session's lists " + node);
-        if (new File("/sys/class/powercap").list() == null) {
+        if (!listable.test("/sys/class/powercap")) {
             File empty = new File(base, "empty-powercap");
             if (empty.isDirectory() || empty.mkdirs()) bind(cmd, empty.getPath() + ":/sys/class/powercap");
         }

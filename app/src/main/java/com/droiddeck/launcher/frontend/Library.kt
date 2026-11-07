@@ -1,6 +1,7 @@
 package com.droiddeck.launcher.frontend
 
 import android.content.Context
+import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.R
 import com.droiddeck.launcher.runtime.LinuxRuntime
 import com.droiddeck.launcher.session.GameStorage
@@ -202,12 +203,16 @@ object Library {
 
     fun fromSteamClient(g: SteamGame): Boolean = g.library != ADDED && g.source == SOURCE_STEAM
 
+    fun allowedInBuild(g: SteamGame, steamOnly: Boolean = BuildConfig.STEAM_ONLY): Boolean =
+        !steamOnly || (fromSteamClient(g) && g.storeId == null &&
+            g.library !in setOf(EPIC_LAUNCHER, BATTLENET_LAUNCHER, XBOX_CLOUD))
+
     fun launchableGames(
         context: Context, strictRead: Boolean = false, added: List<AddedGames.Game>? = null,
         arch: String = SessionPrefs.activeSteamClientArch(context),
     ): List<SteamGame> {
         val roots = steamLibraries(context, arch).map { it.first }
-        val list = added ?: AddedGames.scan(context)
+        val list = if (BuildConfig.STEAM_ONLY) emptyList() else added ?: AddedGames.scan(context)
         var steam = steamGames(context, strictRead, arch)
         val targets = steam.filter(::fromSteamClient).map { SteamGrid.target(it, context) } + list.map { SteamGrid.target(it, context) }
         if (runCatching { SteamGrid.sync(context, targets) }.getOrDefault(false)) steam = steamGames(context, strictRead, arch)

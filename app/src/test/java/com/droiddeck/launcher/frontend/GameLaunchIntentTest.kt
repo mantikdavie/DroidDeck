@@ -48,4 +48,11 @@ class GameLaunchIntentTest {
         assertFalse(GameLaunchIntent.accepts(Intent.ACTION_SEND))
         assertTrue(GameLaunchIntent.accepts(GameLaunchIntent.ACTION))
     }
+
+    @Test fun aSteamDeepLinkCannotOverrideAnExplicitNonSteamSource() {
+        val request = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("droiddeck://game/440"))
+            .putExtra(GameLaunchIntent.EXTRA_GAME_SOURCE, "GOG")
+        assertEquals(if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) null else "440",
+            GameLaunchIntent.read(RuntimeEnvironment.getApplication(), request))
+    }
 }

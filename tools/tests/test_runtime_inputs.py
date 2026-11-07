@@ -1,7 +1,9 @@
 import importlib.util
 import gzip
 import io
+import os
 from pathlib import Path, PureWindowsPath
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -14,10 +16,16 @@ from zipfile import ZipFile
 spec = importlib.util.spec_from_file_location('runtime_inputs', Path(__file__).resolve().parents[1] / 'release/runtime_inputs.py')
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
+profile_spec = importlib.util.spec_from_file_location('pack_profile', runtime.ROOT / 'tools/packs/profile.py')
+profile = importlib.util.module_from_spec(profile_spec)
+profile_spec.loader.exec_module(profile)
 
 
 class RuntimeInputsTest(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ, {'DROIDDECK_STEAM_ONLY': 'false'})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -35,6 +43,7 @@ class RuntimeInputsTest(unittest.TestCase):
         self.source.write_text('current source')
         self.audio(['pactl', 'modules/arm64/module-aaudio-sink.so', 'modules/arm64/module-directaudio-native-sink.so'])
         self.packs()
+        profile.record(self.root / runtime.PACKS, 'all-stores')
 
     def pack(self, name, files):
         stream = io.BytesIO()
@@ -192,7 +201,7 @@ class RuntimeInputsTest(unittest.TestCase):
     def test_a_stale_pack_is_rejected(self):
         apk = self.current_apk(self.root / 'current.apk')
         self.pack('comet', {'comet': b'old build', 'version': b'old'})
-        with self.assertRaisesRegex(ValueError, 'comet is missing or has a stale'):
+        with self.assertRaisesRegex(ValueError, 'checksums or sizes'):
             runtime.check_apk(apk, self.root)
 
     def test_a_missing_pack_is_rejected(self):
@@ -247,3 +256,87 @@ class RuntimeInputsTest(unittest.TestCase):
         path.write_bytes(b'not a gzip stream')
         with self.assertRaisesRegex(ValueError, 'Invalid desktop removal inventory'):
             runtime.record(self.root)
+
+    def steam_apk(self, extra=None, embedded_packs=False):
+        for name in runtime.STORE_PACKS:
+            (self.root / runtime.PACKS / (name + '.tar.zst')).unlink(missing_ok=True)
+        profile.record(self.root / runtime.PACKS, 'steam-only')
+        runtime.record(self.root, steam_only=True)
+        data = runtime.verify(self.root, steam_only=True)
+        apk = self.root / 'steam.apk'
+        with ZipFile(apk, 'w') as package:
+            for name, output in data['outputs'].items():
+                if self.in_apk(name):
+                    package.writestr(name, (self.root / output['path']).read_bytes())
+            if embedded_packs:
+                for name in runtime.pack_names(True):
+                    package.writestr(f'assets/packs/{name}.tar.zst',
+                                     (self.root / runtime.PACKS / (name + '.tar.zst')).read_bytes())
+            for name, content in (extra or {}).items():
+                package.writestr(name, content)
+        return apk
+
+    def test_steam_profile_passes_without_store_runtimes_or_packs(self):
+        for prefix in runtime.STORE_TREES:
+            shutil.rmtree(self.root / 'app/src/main' / prefix)
+        for name in runtime.STORE_PACKS:
+            (self.root / runtime.PACKS / (name + '.tar.zst')).unlink()
+        apk = self.steam_apk(embedded_packs=True)
+        runtime.check_apk(apk, self.root, steam_only=True)
+        data = runtime.verify(self.root, steam_only=True)
+        self.assertEqual(set(data['packs']), {'proot', 'directaudio', 'tracking', 'powervr'})
+        self.assertFalse(any(name.startswith(runtime.STORE_TREES) for name in data['outputs']))
+
+    def test_runtime_profile_switch_requires_preparation_even_with_stale_override(self):
+        runtime.record(self.root, steam_only=False)
+        with self.assertRaisesRegex(ValueError, 'build profile changed'):
+            runtime.verify(self.root, stale_sources_ok=True, steam_only=True)
+        self.steam_apk()
+        with self.assertRaisesRegex(ValueError, 'build profile changed'):
+            runtime.verify(self.root, stale_sources_ok=True, steam_only=False)
+
+    def test_steam_apk_rejects_cached_store_payloads(self):
+        forbidden = [f'assets/packs/{name}.tar.zst' for name in runtime.STORE_PACKS]
+        forbidden += [prefix + 'cached-binary' for prefix in runtime.STORE_TREES]
+        forbidden += ['assets/xcloud/player.js', 'lib/arm64-v8a/libdroiddeckstores.so']
+        for name in forbidden:
+            with self.subTest(name=name):
+                apk = self.steam_apk({name: b'cached payload'})
+                with self.assertRaisesRegex(ValueError, 'non-Steam payload'):
+                    runtime.check_apk(apk, self.root, steam_only=True)
+
+    def test_steam_profile_ignores_unshipped_store_source_changes(self):
+        files = [self.root / 'tools' / name / 'build.sh' for name in ('xbox', 'comet')]
+        files.append(self.root / 'tools/packs/butler/release.env')
+        for path in files:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('old source')
+        self.steam_apk()
+        for path in files:
+            path.write_text('new source')
+        runtime.verify(self.root, steam_only=True)
+        self.source.write_text('changed shared runtime')
+        with self.assertRaisesRegex(ValueError, 'sources changed'):
+            runtime.verify(self.root, steam_only=True)
+
+    def test_embedded_pack_set_must_be_complete(self):
+        apk = self.steam_apk({'assets/packs/proot.tar.zst':
+                             (self.root / runtime.PACKS / 'proot.tar.zst').read_bytes()})
+        with self.assertRaisesRegex(ValueError, 'pack set'):
+            runtime.check_apk(apk, self.root, steam_only=True)
+
+    def test_embedded_pack_bytes_must_match_verified_pack(self):
+        apk = self.steam_apk(embedded_packs=True)
+        with ZipFile(apk) as package:
+            contents = {name: package.read(name) for name in package.namelist()}
+        contents['assets/packs/tracking.tar.zst'] = b'old tracking pack'
+        with ZipFile(apk, 'w') as package:
+            for name, content in contents.items():
+                package.writestr(name, content)
+        with self.assertRaisesRegex(ValueError, 'stale add-on pack: tracking'):
+            runtime.check_apk(apk, self.root, steam_only=True)
+
+    def test_steam_profile_still_requires_powervr_payload(self):
+        (self.root / 'app/src/main/assets/hybris/runtime.tzst').unlink()
+        with self.assertRaisesRegex(ValueError, 'assets/hybris/runtime.tzst'):
+            runtime.record(self.root, steam_only=True)

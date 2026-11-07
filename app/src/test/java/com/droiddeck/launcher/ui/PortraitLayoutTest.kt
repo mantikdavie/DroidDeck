@@ -82,7 +82,11 @@ class PortraitLayoutTest {
             }
         }
         compose.mainClock.advanceTimeBy(1_000)
-        for (key in listOf("games", "stores", "desktop", "components", "android-apps", "setup", "updates", "steam")) {
+        val destinations = listOf("games") +
+            (if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) emptyList() else listOf("stores")) +
+            listOf("desktop", "components", "android-apps", "setup", "updates", "steam")
+        if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) compose.onNodeWithTag("rail-stores").assertDoesNotExist()
+        for (key in destinations) {
             compose.onNodeWithTag("rail-$key").performScrollTo()
             compose.mainClock.advanceTimeBy(1_000)
             compose.onNodeWithTag("rail-$key").assertIsDisplayed().performClick()

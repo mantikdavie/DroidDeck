@@ -454,7 +454,7 @@ internal fun SetupPanel(
                                 remember { RailLabels.load(railContext) }
                                 ToggleRow(host, "rail-labels", stringResource(R.string.setup_rail_labels), stringResource(R.string.setup_rail_labels_hint), RailLabels.shown) { RailLabels.set(railContext, it) }
                                 LanguageRow(host, s.language, a.onLanguage)
-                                ToggleRow(host, "show-stores", stringResource(R.string.setup_stores), null, s.gameStoresEnabled, onChange = a.onGameStoresEnabled)
+                                if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) ToggleRow(host, "show-stores", stringResource(R.string.setup_stores), null, s.gameStoresEnabled, onChange = a.onGameStoresEnabled)
                             }
                         }
                         val device: @Composable () -> Unit = {
@@ -505,7 +505,7 @@ internal fun SetupPanel(
                         }
                         val art: @Composable () -> Unit = {
                             SettingsGroup(stringResource(R.string.setup_group_art)) {
-                                ToggleRow(host, "added-art", stringResource(R.string.mode_added_art), stringResource(R.string.mode_added_art_hint), s.addedGamesArt) { a.onAddedGamesArt(it) }
+                                if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) ToggleRow(host, "added-art", stringResource(R.string.mode_added_art), stringResource(R.string.mode_added_art_hint), s.addedGamesArt) { a.onAddedGamesArt(it) }
                                 ActionRow(
                                     stringResource(R.string.mode_sgdb_key), if (s.sgdbUserKey) stringResource(R.string.mode_sgdb_key_yours) else null,
                                     stringResource(R.string.mode_sgdb_edit), onClick = { editSgdbKey = true },
@@ -778,7 +778,7 @@ internal fun LaunchSettings(s: FrontEndState, a: FrontEndActions, host: MenuHost
 internal class GameSettingsState(private val appContext: android.content.Context, val scope: String) {
     var config by mutableStateOf(runCatching { com.droiddeck.launcher.session.GameEnvironmentStore.read(appContext) }.getOrNull())
     var saving by mutableStateOf(false)
-    val noSteam: Boolean get() = config?.let { com.droiddeck.launcher.core.GameEnvironment.gameNoSteam(it, scope) } == true
+    val noSteam: Boolean get() = !com.droiddeck.launcher.BuildConfig.STEAM_ONLY && config?.let { com.droiddeck.launcher.core.GameEnvironment.gameNoSteam(it, scope) } == true
 
     fun save(change: (android.content.Context) -> com.droiddeck.launcher.core.GameEnvironment.Config?) {
         if (saving) return
@@ -837,7 +837,7 @@ internal fun GameSettingsMenus(host: MenuHost, game: com.droiddeck.launcher.fron
     val customSync = stringResource(R.string.game_sync_custom)
     val resetDone = stringResource(R.string.comp_game_reset_done, game.name)
     AnchoredMenu(host.open == key, onDismiss = { if (host.open == key) host.open = null }, title = stringResource(R.string.game_settings_menu_title, game.name)) { first ->
-        MenuItem(stringResource(R.string.game_no_steam_title), checked = noSteam, enabled = ready,
+        if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) MenuItem(stringResource(R.string.game_no_steam_title), checked = noSteam, enabled = ready,
             detail = stringResource(R.string.game_no_steam_detail), focusRequester = first) {
             val on = !noSteam
             save { com.droiddeck.launcher.session.GameEnvironmentStore.setGameNoSteam(it, scope, on) }
@@ -846,6 +846,7 @@ internal fun GameSettingsMenus(host: MenuHost, game: com.droiddeck.launcher.fron
             val chosen = com.droiddeck.launcher.core.FexPreset.all.firstOrNull { it.id == fex }
             MenuItem(
                 stringResource(R.string.fex_preset_title), checked = false, enabled = ready,
+                focusRequester = first.takeIf { com.droiddeck.launcher.BuildConfig.STEAM_ONLY },
                 detail = when {
                     fex == null -> useDefault
                     chosen == null -> custom

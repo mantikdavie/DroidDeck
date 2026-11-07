@@ -15,10 +15,13 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import org.json.JSONObject;
 
 /** Isolated glibc-to-Android Vulkan bridge. It does not replace the rootfs's Mesa libraries. */
@@ -44,17 +47,61 @@ public final class SystemVulkanDriver {
 
     private SystemVulkanDriver() {}
 
-    /**
-     * The first vendor HAL present, or null. An Exynos with a Mali (Exynos 1280/1380: /dev/mali0)
-     * may name its HAL vulkan.samsung.so too; that is a Mali, not an Xclipse, and is not taken.
-     */
     public static String hal() {
+        return findHal(GpuInfo.Companion.systemProperty("ro.hardware.vulkan"),
+                GpuInfo.Companion.systemProperty("ro.board.platform"),
+                GpuInfo.Companion.systemProperty("ro.vulkan.apex"),
+                new File("/dev/mali0").exists(), path -> new File(path).isFile(),
+                () -> VulkanInfo.INSTANCE.query().get("vendor_id"));
+    }
+
+    static String findHal(String hardware, String platform, String apex, boolean mali,
+                          Predicate<String> exists, Supplier<String> vendorId) {
+        LinkedHashSet<String> modules = new LinkedHashSet<>();
+        if (safeModuleName(hardware)) modules.add(hardware);
+        if (safeModuleName(platform)) modules.add(platform);
+        List<String[]> namespaces = new ArrayList<>();
+        // Android 15+ tries the selected Vulkan APEX before the vendor HAL.
+        if (safeModuleName(apex)) namespaces.add(new String[]{
+                "/apex/" + apex + "/lib64", "/apex/" + apex + "/lib64/hw"});
+        namespaces.add(new String[]{"/vendor/lib64/hw"});
+        for (String[] directories : namespaces) for (String module : modules) for (String directory : directories) {
+            String path = directory + "/vulkan." + module + ".so";
+            if (!exists.test(path)) continue;
+            if (mali) return null;
+            if (module.equals("powervr") || module.equals("samsung")) return path;
+            return imaginationVendor(vendorId.get()) ? path : null;
+        }
         for (String path : HALS) {
-            if (!new File(path).isFile()) continue;
-            if (path.endsWith("/vulkan.samsung.so") && new File("/dev/mali0").exists()) continue;
+            if (!exists.test(path)) continue;
+            if (path.endsWith("/vulkan.samsung.so") && mali) continue;
             return path;
         }
         return null;
+    }
+
+    private static boolean safeModuleName(String value) {
+        return value != null && value.matches("[A-Za-z0-9_][A-Za-z0-9_.-]*") && !value.contains("..");
+    }
+
+    static boolean imaginationVendor(String vendorId) {
+        try { return vendorId != null && Integer.decode(vendorId) == 0x1010; }
+        catch (NumberFormatException ignored) { return false; }
+    }
+
+    static String librarySearchPath(String hal) {
+        LinkedHashSet<String> paths = new LinkedHashSet<>();
+        paths.add("/system/lib64");
+        paths.add("/system_ext/lib64");
+        if (hal.startsWith("/apex/")) {
+            String libraryDirectory = hal.substring(0, hal.indexOf("/lib64/") + "/lib64".length());
+            paths.add(libraryDirectory);
+            paths.add(libraryDirectory + "/hw");
+        }
+        paths.add("/vendor/lib64/egl");
+        paths.add("/vendor/lib64/hw");
+        paths.add("/vendor/lib64");
+        return String.join(":", paths);
     }
 
     /** Samsung's Xclipse (Exynos, sgpu) rather than PowerVR. */
@@ -78,9 +125,15 @@ public final class SystemVulkanDriver {
 
     /** Select the actual PowerVR node, including devices where another GPU owns renderD128. */
     public static String renderNodePath() {
+        return renderNodePath(hal());
+    }
+
+    private static String renderNodePath(String hal) {
+        if (hal == null) return null;
+        boolean xclipse = hal.endsWith("/vulkan.samsung.so");
         String[] nodes = new File("/dev/dri").list();
         if (nodes == null) nodes = new File("/sys/class/drm").list();
-        return findRenderNode(nodes, SystemVulkanDriver::renderNodeAvailable);
+        return findRenderNode(nodes, path -> renderNodeAvailable(path, xclipse));
     }
 
     static String findRenderNode(String[] nodes, Predicate<String> available) {
@@ -97,11 +150,11 @@ public final class SystemVulkanDriver {
         return null;
     }
 
-    private static boolean renderNodeAvailable(String node) {
+    private static boolean renderNodeAvailable(String node, boolean xclipse) {
         try {
             if (!renderNodeAvailable(OsConstants.S_ISCHR(Os.stat(node).st_mode),
                     Os.access(node, OsConstants.R_OK), Os.access(node, OsConstants.W_OK))) return false;
-            return powerVrDevice(new File("/sys/class/drm/" + new File(node).getName() + "/device"));
+            return powerVrDevice(new File("/sys/class/drm/" + new File(node).getName() + "/device"), xclipse);
         } catch (ErrnoException error) {
             return false;
         }
@@ -113,8 +166,17 @@ public final class SystemVulkanDriver {
     }
 
     static boolean powerVrDevice(File device) {
+        return deviceDriverMatches(device, SystemVulkanDriver::powerVrDriver);
+    }
+
+    static boolean powerVrDevice(File device, boolean xclipse) {
+        return deviceDriverMatches(device, driver -> xclipse ? "sgpu".equals(driver)
+                : powerVrDriver(driver) && !"sgpu".equals(driver));
+    }
+
+    private static boolean deviceDriverMatches(File device, Predicate<String> matches) {
         try {
-            return powerVrDriver(Files.readSymbolicLink(new File(device, "driver").toPath())
+            return matches.test(Files.readSymbolicLink(new File(device, "driver").toPath())
                     .getFileName().toString());
         } catch (IOException error) {
             // Some Android policies expose uevent but deny reading the driver symlink.
@@ -122,7 +184,7 @@ public final class SystemVulkanDriver {
                     new File(device, "uevent").toPath(), StandardCharsets.US_ASCII)) {
                 String line;
                 while ((line = input.readLine()) != null)
-                    if (line.startsWith("DRIVER=")) return powerVrDriver(line.substring(7));
+                    if (line.startsWith("DRIVER=")) return matches.test(line.substring(7));
             } catch (IOException ignored) { }
             return false;
         }
@@ -230,18 +292,24 @@ public final class SystemVulkanDriver {
         }
     }
 
+    static boolean softwareSessionGl(String manufacturer, String device, String selectedHal) {
+        return "Google".equalsIgnoreCase(manufacturer) && "kodiak".equals(device) &&
+                selectedHal != null && selectedHal.endsWith("/vulkan.powervr.so");
+    }
+
     public static void addEnvironment(Context context, List<String> environment) {
         File directory;
         try { directory = prepare(context); }
         catch (IOException error) { throw new IllegalStateException("System Vulkan runtime is unavailable", error); }
-        String node = renderNodePath();
+        String selectedHal = hal();
+        String node = renderNodePath(selectedHal);
         if (node == null) throw new IllegalStateException("System PowerVR render node is unavailable");
         environment.add("HYBRIS_ANDROID_SDK_VERSION=" + Build.VERSION.SDK_INT);
-        environment.add("HYBRIS_VULKAN_HAL=" + hal());
+        environment.add("HYBRIS_VULKAN_HAL=" + selectedHal);
         environment.add("HYBRIS_LINKER_DIR=" + new File(directory, "lib/libhybris/linker").getPath());
         // Prefer framework dependencies for the system Vulkan loader, including libbase.so.
-        environment.add("HYBRIS_LD_LIBRARY_PATH=/system/lib64:/system_ext/lib64:/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64");
-        boolean xclipse = isXclipse();
+        environment.add("HYBRIS_LD_LIBRARY_PATH=" + librarySearchPath(selectedHal));
+        boolean xclipse = selectedHal.endsWith("/vulkan.samsung.so");
         // Xclipse gets its own layer (tools/linuxfs/xclipse-layer) in front of everything: it sets
         // bionic's environ for the driver's shader compiler, among other driver workarounds. The
         // session's own clients need nothing else; games keep the compat layer's BC emulation.
@@ -261,6 +329,9 @@ public final class SystemVulkanDriver {
         environment.add("BL_POWERVR_RENDER_NODE=" + node);
         // Inner Gamescope/Xwayland lacks the bridge's Android-buffer WSI protocols.
         environment.add("BL_STEAM_GL_PRESENT=1");
+        // Kodiak's PowerVR/Zink Xwayland path loses RGB channels before composition.
+        if (softwareSessionGl(Build.MANUFACTURER, Build.DEVICE, selectedHal))
+            environment.add("BL_POWERVR_SOFTWARE_GL=1");
         // Only actual Proton game launches use the bundled DXVK and X11 WSI layer.
         environment.add("DROIDDECK_POWERVR_RUNTIME=" + directory.getPath());
     }

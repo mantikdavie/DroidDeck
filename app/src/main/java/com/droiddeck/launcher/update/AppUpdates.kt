@@ -129,7 +129,7 @@ object AppUpdates {
         BuildConfig.PR_NUMBER,
         BuildConfig.VERSION_NAME,
         BuildConfig.VERSION_CODE,
-        releaseSigned,
+        releaseSigned && !BuildConfig.STEAM_ONLY,
         BuildConfig.COMMIT_TIME,
         nonAdrenoTest = BuildConfig.BUILD_LABEL.contains("non-adreno"),
     )

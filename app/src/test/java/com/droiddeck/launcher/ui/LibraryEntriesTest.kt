@@ -13,6 +13,17 @@ import org.junit.Test
 class LibraryEntriesTest {
     private fun owned(store: Store, id: String, title: String = id) = CatalogItem(store, id, title, imageUrl = null, owned = true)
 
+    @Test fun steamOnlyIgnoresStaleLocalStoreAndCloudGamesAndOwnedCatalogs() {
+        val steam = Library.SteamGame(440, "Steam game", null, "internal")
+        val games = listOf(steam,
+            Library.SteamGame(1, "Local game", null, Library.ADDED, source = Library.ADDED),
+            Library.SteamGame(2, "GOG game", null, Library.ADDED, source = "gog", storeId = "gog-game"),
+            Library.SteamGame(3, "Cloud game", null, Library.XBOX_CLOUD, source = "xbox", storeId = "cloud"))
+        val entries = libraryEntries(games, mapOf(Store.GOG to listOf(owned(Store.GOG, "owned"))), setOf("gog:owned"), steamOnly = true)
+        assertEquals(listOf(steam), entries.map { it.game })
+        assertEquals(listOf("steam"), librarySources(entries, listOf("gog", "xbox")))
+    }
+
     @Test fun anInstalledStoreGameClaimsItsOwnedProductSoItShowsOnce() {
         val games = listOf(
             Library.SteamGame(440, "Team Fortress 2", null, "Steam library"),

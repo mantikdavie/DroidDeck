@@ -184,9 +184,11 @@ object SessionPrefs {
         prefs(context).edit().putBoolean("dualScreenSessionControls", on).apply()
     }
 
-    fun gameStoresEnabled(context: Context): Boolean = prefs(context).getBoolean("gameStoresEnabled", true)
+    fun gameStoresEnabled(context: Context): Boolean =
+        !com.droiddeck.launcher.BuildConfig.STEAM_ONLY && prefs(context).getBoolean("gameStoresEnabled", true)
 
     fun setGameStoresEnabled(context: Context, on: Boolean) {
+        if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) return
         prefs(context).edit().putBoolean("gameStoresEnabled", on).apply()
     }
 

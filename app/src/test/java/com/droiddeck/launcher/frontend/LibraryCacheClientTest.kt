@@ -36,4 +36,18 @@ class LibraryCacheClientTest {
         LibraryCache.save(app, games, x64 = false)
         assertFalse(LibraryCache.listedX64(app))
     }
+
+    @Test fun steamOnlyFiltersLegacyStoreAndImportedRowsWithoutChangingTheSavedFile() {
+        org.junit.Assume.assumeTrue(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
+        val file = java.io.File(app.filesDir, "library-cache.json")
+        val saved = """{"client":"x86_64","games":[
+            {"appId":440,"name":"Steam game","library":"internal","gameId":440},
+            {"appId":1,"name":"Imported game","library":"added","gameId":1},
+            {"appId":2,"name":"GOG game","library":"added","gameId":2,"source":"gog","storeId":"2"},
+            {"appId":3,"name":"Xbox cloud","library":"xbox-cloud","gameId":3,"source":"xbox","storeId":"3"}
+        ]}"""
+        file.writeText(saved)
+        assertEquals(listOf("Steam game") to true, LibraryCache.snapshot(app).let { (g, x) -> g.map { it.name } to x })
+        assertEquals(saved, file.readText())
+    }
 }

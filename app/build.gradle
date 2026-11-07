@@ -11,6 +11,15 @@ if (localBuildOptionsFile.asFile.exists()) {
 }
 def pythonExecutable = project.findProperty('pythonExecutable')
     ?: localBuildOptions.getProperty('droiddeck.python', 'python3')
+def steamOnlyValue = (project.findProperty('steamOnly')
+    ?: providers.environmentVariable('DROIDDECK_STEAM_ONLY').getOrElse('true')).toString().toLowerCase()
+if (!(steamOnlyValue in ['true', 'false', '1', '0'])) {
+    throw new GradleException('steamOnly / DROIDDECK_STEAM_ONLY must be true or false')
+}
+def steamOnly = steamOnlyValue in ['true', '1']
+def storePackNames = ['xbox', 'comet', 'butler']
+def allPackNames = ['proot', 'directaudio', 'tracking', 'xbox', 'comet', 'butler', 'powervr']
+def enabledPackNames = allPackNames.findAll { !steamOnly || !(it in storePackNames) }
 def vitureSdkDir = project.hasProperty('vitureSdkDir') ? project.property('vitureSdkDir') : localBuildOptions.getProperty('droiddeck.vitureSdk', '')
 def uvcDir = project.hasProperty('uvcDir') ? project.property('uvcDir') : localBuildOptions.getProperty('droiddeck.uvcDir', '')
 if (uvcDir) {
@@ -93,7 +102,8 @@ def trackingPack = rootProject.file('tools/packs/tracking/release.env').readLine
 def prootPackPin = rootProject.file('tools/packs/proot/release.env').readLines()
     .findAll { it.contains('=') && !it.startsWith('#') }
     .collectEntries { def kv = it.split('=', 2); [(kv[0].trim()): kv[1].trim()] }
-def addonPacks = ['proot', 'directaudio', 'tracking', 'xbox', 'comet', 'butler', 'powervr'].collectEntries { name ->
+def addonPacks = allPackNames.collectEntries { name ->
+    if (!(name in enabledPackNames)) return [(name): [sha256: '', size: 0L]]
     def pack = file("build/packs/${name}.tar.zst")
     if (!pack.isFile()) {
         if (ciBuild) throw new GradleException("Add-on pack ${pack} is missing: run tools/packs/build.sh app/build/packs")
@@ -133,6 +143,13 @@ android {
         targetSdkVersion 28
         versionCode 17
         versionName "0.6.9"
+        buildConfigField "boolean", "STEAM_ONLY", steamOnly.toString()
+        resValue 'bool', 'non_steam_enabled', (!steamOnly).toString()
+        if (steamOnly) {
+            applicationIdSuffix '.steam'
+            versionNameSuffix '-steam'
+            resValue 'string', 'app_name', 'DroidDeck Steam'
+        }
         buildConfigField "String", "BUILD_LABEL", "\"${escapedBuildLabel}\""
         buildConfigField "String", "SOURCE_COMMIT", "\"${sourceCommit}\""
         buildConfigField "int", "PR_NUMBER", "${prNumber}"
@@ -191,7 +208,7 @@ android {
             def localSuffix = localBuildOptions.getProperty('droiddeck.debugApplicationIdSuffix')
             if (localSuffix) {
                 applicationIdSuffix localSuffix
-                resValue 'string', 'app_name', 'DroidDeck XR Dev'
+                resValue 'string', 'app_name', steamOnly ? 'DroidDeck Steam Dev' : 'DroidDeck XR Dev'
             }
         }
         release {
@@ -216,6 +233,7 @@ android {
             useLegacyPackaging = true
             pickFirsts += ['**/libtermux.so']
             excludes += ['**/libproot.so', '**/libproot-loader.so', '**/libopencv_java4.so', '**/libmediapipe_tasks_jni.so']
+            if (steamOnly) excludes += ['**/libdroiddeckstores.so']
         }
     }
 
@@ -275,7 +293,10 @@ tasks.named('preBuild').configure { dependsOn(stageSessionScripts) }
 def runtimeAssetsDir = layout.buildDirectory.dir('runtimeAssets')
 def stageRuntimeAssets = tasks.register('stageRuntimeAssets', Sync) {
     dependsOn(stageSessionScripts)
-    from(layout.projectDirectory.dir('src/main/assets')) { exclude 'pulseaudio.tzst' }
+    from(layout.projectDirectory.dir('src/main/assets')) {
+        exclude 'pulseaudio.tzst'
+        if (steamOnly) exclude 'xcloud/**', 'linuxfs/usr/local/lib/droiddeck-xbox/**', 'linuxfs/usr/local/lib/droiddeck-comet/**'
+    }
     from(rootProject.file('tools/linuxfs/innoextract'))
     from(layout.buildDirectory.dir('prepared-assets'))
     into(runtimeAssetsDir)
@@ -296,12 +317,14 @@ def stageGogNotices = tasks.register('stageGogNotices', Copy) {
     from(layout.projectDirectory.dir('src/main/rust/stores/vendor/xdelta3')) { include 'LICENSE', 'README.droiddeck.md' }
     into(layout.buildDirectory.dir('gogNotices/licenses/xdelta3'))
 }
-android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('gogNotices'))
-tasks.named('preBuild').configure { dependsOn(stageGogNotices) }
+if (!steamOnly) {
+    android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('gogNotices'))
+    tasks.named('preBuild').configure { dependsOn(stageGogNotices) }
+}
 
 if (!ciBuild) {
     def stageLocalPacks = tasks.register('stageLocalPacks', Sync) {
-        from(layout.buildDirectory.dir('packs')) { include '*.tar.zst' }
+        from(layout.buildDirectory.dir('packs')) { include enabledPackNames.collect { "${it}.tar.zst" } }
         into(layout.buildDirectory.dir('localPackAssets/packs'))
     }
     android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('localPackAssets'))
@@ -313,7 +336,8 @@ def verifyRuntimeInputs = tasks.register('verifyRuntimeInputs', Exec) {
     workingDir rootProject.projectDir
     def allowStale = (project.findProperty('allowStaleRuntime')
         ?: localBuildOptions.getProperty('droiddeck.allowStaleRuntime', 'false')).toString().toBoolean()
-    commandLine([pythonExecutable, 'tools/release/runtime_inputs.py', 'verify'] + (allowStale ? ['--allow-stale-sources'] : []))
+    commandLine([pythonExecutable, 'tools/release/runtime_inputs.py', 'verify', steamOnly ? '--steam-only' : '--all-stores']
+        + (allowStale ? ['--allow-stale-sources'] : []))
 }
 tasks.configureEach { task ->
     if (task.name in ['packageDebug', 'packageRelease']) task.dependsOn(verifyRuntimeInputs)
@@ -321,7 +345,7 @@ tasks.configureEach { task ->
 
 def rustCrateDir = layout.projectDirectory.dir('src/main/rust/stores')
 def rustJniLibsDir = layout.buildDirectory.dir('rustJniLibs')
-def skipRust = (project.findProperty('skipRust')
+def skipRust = steamOnly || (project.findProperty('skipRust')
     ?: localBuildOptions.getProperty('droiddeck.skipRust', 'false')).toString().toBoolean()
 def buildRustStores = tasks.register('buildRustStores', Exec) {
     description = 'Cross-compiles the store download engines (libdroiddeckstores.so) with cargo-ndk.'

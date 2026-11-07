@@ -57,6 +57,7 @@ object DeviceInfo {
         add("Model found from", when (gpu.modelSource) {
             "kernel" -> "the kernel's GPU name"
             "vulkan" -> "the Vulkan driver (the kernel's name has no model)"
+            "system_hal" -> "the Android system Vulkan HAL"
             "platform" -> "the platform or SoC (the kernel and Vulkan names have no model)"
             else -> "unknown"
         })
@@ -112,6 +113,7 @@ object DeviceInfo {
 
     private fun system() = Section("System", buildList<Pair<String, String>> {
         add("Device", "${Build.MANUFACTURER} ${Build.MODEL}")
+        add("Device codename", Build.DEVICE)
         add("Android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         add("Security patch", Build.VERSION.SECURITY_PATCH)
         add("Kernel", System.getProperty("os.version"))
@@ -147,6 +149,10 @@ object DeviceInfo {
         val turnip = TurnipDriver(context)
         val choice = SessionPrefs.androidDriver(context).ifEmpty { turnip.autoId() }
         val powerVr = gpu.family == GpuInfo.Family.POWERVR
+        if (powerVr) {
+            add("System Vulkan HAL", SystemVulkanDriver.hal())
+            add("DRM render node", SystemVulkanDriver.renderNodePath() ?: "Unavailable or inaccessible to the app")
+        }
         add("Display driver", if (choice == "system") builtinDriverLabel(powerVr, runtime = false)
             else "${turnip.displayName(choice)} ${turnip.driverVersion(choice)}".trim())
         val linux = LinuxVulkanDriverManager(context)

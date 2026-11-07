@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.session.SessionPrefs
 import com.droiddeck.launcher.stores.download.DownloadEntry
 
@@ -70,13 +71,19 @@ object StoresState {
 
     private val searchSeq = java.util.concurrent.ConcurrentHashMap<Store, Int>()
 
-    fun backend(store: Store): StoreBackend? = backends[store]
+    fun backend(store: Store): StoreBackend? = if (BuildConfig.STEAM_ONLY) null else backends[store]
 
-    fun register(backend: StoreBackend) { backends[backend.store] = backend }
+    fun register(backend: StoreBackend) {
+        if (!BuildConfig.STEAM_ONLY) backends[backend.store] = backend
+    }
 
     private val refreshRequests = java.util.concurrent.atomic.AtomicInteger()
 
     fun refresh(context: Context) {
+        if (BuildConfig.STEAM_ONLY) {
+            accountsLoaded = true
+            return
+        }
         val app = context.applicationContext
         com.droiddeck.launcher.stores.download.SavedQueue.restore(app)
         if (refreshRequests.getAndIncrement() > 0) return
@@ -190,12 +197,14 @@ object StoresState {
     }
 
     fun signIn(context: Context, store: Store) {
+        if (BuildConfig.STEAM_ONLY) return
         expired.remove(store)
         libraryAsked.remove(store)
         backends[store]?.signIn(context) ?: logLine("${store.label}: this build has no sign-in for it yet")
     }
 
     fun signOut(context: Context, store: Store) {
+        if (BuildConfig.STEAM_ONLY) return
         val app = context.applicationContext
         background("stores-signout") {
             val backend = backends[store]
@@ -237,6 +246,7 @@ object StoresState {
     var gameJoltPicking by mutableStateOf<CatalogItem?>(null)
 
     fun requestInstall(context: Context, item: CatalogItem) {
+        if (BuildConfig.STEAM_ONLY) return
         askForNotifications(context)
         if (item.store == Store.ITCH && item.extra["uploadId"].isNullOrEmpty()) { itchPicking = item; return }
         if (item.store == Store.GAMEJOLT && item.extra["buildId"].isNullOrEmpty()) { gameJoltPicking = item; return }
@@ -255,6 +265,7 @@ object StoresState {
     }
 
     fun install(context: Context, item: CatalogItem, root: java.io.File? = null, language: String? = null) {
+        if (BuildConfig.STEAM_ONLY) return
         val app = context.applicationContext
         val targetRoot = root ?: StoreInstallRoot.defaultTarget(app)?.root ?: StoreInstallRoot.installRoot(app)
         if (item.store == Store.BATTLENET && !com.droiddeck.launcher.stores.battlenet.BattleNetInstall.headless(item)) {
@@ -289,6 +300,7 @@ object StoresState {
     val uninstalling = mutableStateMapOf<String, Float>()
 
     fun uninstall(context: Context, game: InstalledStoreGame, onDone: () -> Unit = {}) {
+        if (BuildConfig.STEAM_ONLY) { onDone(); return }
         val app = context.applicationContext
         val key = "${game.sidecar.store.id}:${game.sidecar.id}"
         uninstalling[key] = 0f
@@ -327,6 +339,7 @@ object StoresState {
     private var appContext: Context? = null
 
     fun init(context: Context) {
+        if (BuildConfig.STEAM_ONLY) return
         appContext = context.applicationContext
         StoreLogFiles.prune(context)
         val overlay = java.io.File(com.droiddeck.launcher.runtime.LinuxRuntime.rootDir(context), "root/.local/share/droiddeck/epic-overlay")

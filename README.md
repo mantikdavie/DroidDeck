@@ -5,7 +5,9 @@
   </picture>
 </p>
 
-DroidDeck brings the SteamOS experience to Android: Steam Gaming Mode, full Linux desktop, integration with GOG, Epic Games, Xbox, and other storefronts, Steam VR, and more!
+This branch builds **DroidDeck Steam**: Steam Gaming Mode, the Linux desktop, controllers, folder sync and SteamVR. Other storefronts, their login/download services, local game imports and emulator entry points are disabled. Xbox, GOG Comet, itch.io butler and the store JNI engine are excluded from the APK.
+
+The default package is `com.droiddeck.launcher.steam`, so it installs alongside the original DroidDeck. Upstream APK links below are for the original app; build this branch for the Steam-only version.
 
 <p align="center"><b>100% open source. No ads. No telemetry. No source withheld.</b></p>
 
@@ -36,9 +38,9 @@ DroidDeck brings the SteamOS experience to Android: Steam Gaming Mode, full Linu
 
 ## Install
 
-1. Android 9 or newer on Adreno 730 or newer, or any 8xx. Adreno 6xx is experimental. Mali, Xclipse, PowerVR and Adreno 710 are unsupported. No root needed.
-2. About 3 GB free for the runtime, plus 1.1 GB for the desktop and emulators.
-3. Install the [APK](https://github.com/Droid-Deck/DroidDeck/releases/download/0.6.9/DroidDeck-0.6.9.apk), install the Linux runtime, press **Play** and sign in to Steam.
+1. Android 9 or newer on Adreno 730 or newer, or any 8xx. Adreno 6xx is experimental. This branch also includes experimental system Vulkan support for PowerVR, including Pixel 11 Pro XL, and Xclipse. Mali and Adreno 710 remain unsupported. No root needed.
+2. About 3 GB free for the runtime, plus space for the optional Linux desktop and games.
+3. Build and install this branch's APK, install the Linux runtime, press **Play** and sign in to Steam.
 4. On Android 14 and newer, turn on **Disable child process restrictions** in Developer options. On Android 12 and 13, Steam's first launch shows a **Fix it for me** button that walks you through it.
 
 Smart glasses setup is in the [support matrix](docs/smart-glasses-support.md). Release notes are in [docs/releases](docs/releases).
@@ -47,13 +49,29 @@ Help, Preview builds and device reports are on [Discord](https://discord.gg/JRGA
 
 ## Build
 
-Needs Docker, Java 17, the Android SDK and NDK, Rust via rustup, GitHub CLI, Python 3 and `zstd`.
+Needs Docker, Java 17, the Android SDK and NDK, GitHub CLI, Python 3, Go and `zstd`. Initialize submodules with `git submodule update --init --recursive`. The default Steam-only build skips Rust store engines and non-Steam runtime packs.
 
 ```bash
 tools/build_local.sh
 ```
 
-The APK lands in `app/build/outputs/apk/release/`. Install it with `tools/deploy_local.sh`. After the first run, `./gradlew :app:assembleRelease` reuses the prepared inputs. Unit tests run with `./gradlew -PskipRust=true :app:testDebugUnitTest`, and the helper and preload suite with `bash tools/test_local.sh`.
+The APK lands in `app/build/outputs/apk/release/`. Install it with `tools/deploy_local.sh`. After the first run, `./gradlew :app:assembleRelease` reuses the prepared inputs. Unit tests run with `./gradlew :app:testReleaseUnitTest`, and the helper and preload suite with `bash tools/test_local.sh`.
+
+Run the full unit suite on Linux: the log archive test helper requires `SecureDirectoryStream`, which the macOS JDK does not provide, and one existing addon test assumes a case-sensitive filesystem.
+
+`DROIDDECK_STEAM_ONLY=false tools/build_local.sh` restores the original all-store build and requires Rust via rustup. For direct Gradle builds use `-PsteamOnly=false` as well. Re-run the build helper when switching profiles: the runtime manifest and bundled packs must match. Steam-only builds do not install updates intended for the upstream all-store app.
+
+The official all-store signing and publication helpers reject Steam APKs until a dedicated Steam release catalog is configured. Local testkey builds and deployment remain available.
+
+Use `DROIDDECK_PACKAGE=com.droiddeck.launcher.steam tools/droiddeckctl state` for device diagnostics. See [agent control](docs/agent-control.md) for other commands.
+
+## Pixel 11 Pro XL
+
+The connected Pixel 11 Pro XL (`kodiak`, Tensor G6, Android 17) reports a PowerVR C-Series CXTP-48-1536 MC1 GPU, Vulkan 1.4.317 and driver `25.3@6908880`. It selects `/vendor/lib64/hw/vulkan.powervr.so` with the `pvrsrvkm` render node `/dev/dri/renderD128`. This branch discovers the system-selected vendor/APEX Vulkan HAL and checks that the DRM node matches its GPU family; it does not replace the phone's driver.
+
+PowerVR uses the existing libhybris bridge and remains experimental. On 2026-11-08, the isolated APK was verified on this Pixel through app-side HAL detection, libhybris/Gamescope startup, the Steam sign-in screen and a successful restart. The PowerVR sysfs fallback also kept Mangoapp running when Android denied directory listing. Actual game compatibility and performance have not been tested. This device uses 4 KB pages; this build is not certified for 16 KB devices.
+
+On this device, Steam's CEF screenshot retained color while Xwayland's window pixels and the displayed image were grayscale. Using llvmpipe for the session's OpenGL restored full color on the phone. The compatibility profile is limited to Google's `kodiak` with the PowerVR HAL; Vulkan still uses the system driver. Wrapped Proton/FEX and x64 game launches restore the original OpenGL environment. Direct native launches outside those wrappers retain software GL. OpenGL/DRI3 compatibility and game performance remain unverified because Xwayland itself uses software rendering.
 
 On Windows, see `tools/run_windows.ps1` and `tools/prepare_windows_runtime.py`.
 

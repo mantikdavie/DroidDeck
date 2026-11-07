@@ -230,10 +230,11 @@ private fun romFor(s: FrontEndState, selected: String): Pair<Library.Emulator, L
 
 @Composable
 private fun Content(
-    s: FrontEndState, selected: String, a: FrontEndActions, modifier: Modifier,
+    s: FrontEndState, requested: String, a: FrontEndActions, modifier: Modifier,
     onSelect: (String) -> Unit, onAndroidAppClick: (HomeApp.LaunchableApp) -> Unit,
     onOpenDeveloperOptions: () -> Unit, onRequestWirelessAdb: (Boolean) -> Unit, onPairWirelessDebugging: () -> Unit,
 ) {
+    val selected = com.droiddeck.launcher.frontend.FrontEndNavigation.destination(requested)
     val colors = MaterialTheme.colorScheme
     val detailPosterWidth = if (LocalConfiguration.current.screenHeightDp < 600) 72.dp else 120.dp
     val narrow = LocalNarrowPane.current

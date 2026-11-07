@@ -28,6 +28,7 @@ class CloudRecoveryThreadTest {
     }
 
     @Test fun aFailingRecoveryUploadDoesNotReachTheCrashHandler() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
         val context = object : ContextWrapper(RuntimeEnvironment.getApplication()) {
             override fun getApplicationContext(): Context = this
             override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =

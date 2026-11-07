@@ -171,7 +171,7 @@ class FrontEndState(
     val downloadProxy: String = "",
     val animationsEnabled: Boolean = true,
     val launcherIcon: String = com.droiddeck.launcher.LauncherIcon.DARK,
-    val gameStoresEnabled: Boolean = true,
+    val gameStoresEnabled: Boolean = !com.droiddeck.launcher.BuildConfig.STEAM_ONLY,
     val gameStoresSpeedTier: String = "fast",
     val navigate: String? = null,
     val addedGamesArt: Boolean = true,
@@ -443,10 +443,12 @@ fun FrontEndScreen(s: FrontEndState, a: FrontEndActions, page: (@Composable () -
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun FrontEndScreenBody(s: FrontEndState, a: FrontEndActions, page: (@Composable () -> Unit)?, frontFocus: FrontFocus) {
-    var selected by rememberSaveable { mutableStateOf(if (s.shortcutPicker) "games" else "steam") }
+    var selected by rememberSaveable(stateSaver = androidx.compose.runtime.saveable.Saver<String, String>(
+        save = { it }, restore = { com.droiddeck.launcher.frontend.FrontEndNavigation.destination(it) },
+    )) { mutableStateOf(if (s.shortcutPicker) "games" else "steam") }
     LaunchedEffect(s.shortcutPicker) { if (s.shortcutPicker) selected = "games" }
     LaunchedEffect(s.navigate) {
-        val target = s.navigate ?: return@LaunchedEffect
+        val target = s.navigate?.let { com.droiddeck.launcher.frontend.FrontEndNavigation.destination(it) } ?: return@LaunchedEffect
         when (target) {
             "stores:downloads" -> { com.droiddeck.launcher.stores.StoresState.openDownloads = true; selected = "stores" }
             "components" -> a.onComponents(true)
@@ -458,7 +460,10 @@ private fun FrontEndScreenBody(s: FrontEndState, a: FrontEndActions, page: (@Com
         a.onNavigated()
     }
     LaunchedEffect(com.droiddeck.launcher.stores.StoresState.openGameRequest) {
-        if (com.droiddeck.launcher.stores.StoresState.openGameRequest != null) selected = "stores"
+        if (com.droiddeck.launcher.stores.StoresState.openGameRequest != null) {
+            if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) com.droiddeck.launcher.stores.StoresState.openGameRequest = null
+            else selected = "stores"
+        }
     }
     var showWirelessAdbFix by rememberSaveable { mutableStateOf(false) }
     var showDeveloperDisplayChoice by rememberSaveable { mutableStateOf(false) }
@@ -723,10 +728,12 @@ private fun FrontEndScreenBody(s: FrontEndState, a: FrontEndActions, page: (@Com
         }
         FlightsLayer(screenAt)
         GamesDialogs(a, s.steamGames)
-        StoreTheme(com.droiddeck.launcher.stores.Store.XBOX) { XboxStoreDialogs() }
-        com.droiddeck.launcher.stores.StoresState.pendingInstall?.let { item -> StoreTheme(item.store) { InstallWhere(item) } }
-        com.droiddeck.launcher.stores.StoresState.itchPicking?.let { item -> StoreTheme(item.store) { ItchBuildPicker(item) { com.droiddeck.launcher.stores.StoresState.itchPicking = null } } }
-        com.droiddeck.launcher.stores.StoresState.gameJoltPicking?.let { item -> StoreTheme(item.store) { GameJoltBuildPicker(item) { com.droiddeck.launcher.stores.StoresState.gameJoltPicking = null } } }
+        if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) {
+            StoreTheme(com.droiddeck.launcher.stores.Store.XBOX) { XboxStoreDialogs() }
+            com.droiddeck.launcher.stores.StoresState.pendingInstall?.let { item -> StoreTheme(item.store) { InstallWhere(item) } }
+            com.droiddeck.launcher.stores.StoresState.itchPicking?.let { item -> StoreTheme(item.store) { ItchBuildPicker(item) { com.droiddeck.launcher.stores.StoresState.itchPicking = null } } }
+            com.droiddeck.launcher.stores.StoresState.gameJoltPicking?.let { item -> StoreTheme(item.store) { GameJoltBuildPicker(item) { com.droiddeck.launcher.stores.StoresState.gameJoltPicking = null } } }
+        }
         StepsLayer(screenAt)
 
         appToChooseDisplay?.let { app ->

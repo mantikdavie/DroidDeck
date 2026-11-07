@@ -29,7 +29,8 @@ internal class AddonPack(
     val state: StateFlow<State> = mutableState.asStateFlow()
     private val lock = Any()
 
-    val available: Boolean get() = sha256.isNotEmpty()
+    private val enabled: Boolean get() = !BuildConfig.STEAM_ONLY || name !in setOf("xbox", "comet", "butler")
+    val available: Boolean get() = enabled && sha256.isNotEmpty()
     private val tag get() = "pack-$name-${sha256.take(16)}"
     private val urls get() = listOfNotNull(
         "https://github.com/$REPO/releases/download/$tag/$name.tar.zst",
@@ -42,7 +43,11 @@ internal class AddonPack(
 
     fun installed(context: Context): Boolean = version(context).isNotEmpty() && File(dir(context), COMPLETE).isFile
 
-    private fun version(context: Context): String = if (!reuseDeviceCopy) sha256 else deviceCopy(context).orEmpty()
+    private fun version(context: Context): String = when {
+        !enabled -> ""
+        !reuseDeviceCopy -> sha256
+        else -> deviceCopy(context).orEmpty()
+    }
 
     private fun deviceCopy(context: Context): String? = root(context).listFiles().orEmpty()
         .filter { dir ->
@@ -59,6 +64,7 @@ internal class AddonPack(
     }
 
     fun ensure(context: Context, onReady: (Context) -> Unit = {}) {
+        if (!enabled) { mutableState.value = State.Failed; return }
         val app = context.applicationContext
         synchronized(lock) {
             if (installed(app)) { mutableState.value = State.Ready; return }

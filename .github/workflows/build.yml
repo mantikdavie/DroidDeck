@@ -695,7 +695,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: droiddeck-packs
-          path: app/build/packs/*.tar.zst
+          path: |
+            app/build/packs/*.tar.zst
+            app/build/packs/profile.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

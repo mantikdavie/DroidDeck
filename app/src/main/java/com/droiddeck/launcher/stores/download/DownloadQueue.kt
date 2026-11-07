@@ -2,6 +2,7 @@ package com.droiddeck.launcher.stores.download
 
 import android.content.Context
 import android.util.Log
+import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.session.SessionPrefs
 import com.droiddeck.launcher.stores.StoresState
 import java.util.concurrent.atomic.AtomicBoolean
@@ -129,6 +130,7 @@ object DownloadQueue {
     fun isActive(key: String): Boolean = entry(key)?.isActive == true
 
     fun enqueue(context: Context, entry: DownloadEntry, factory: () -> DownloadJob) {
+        if (BuildConfig.STEAM_ONLY) return
         val app = context.applicationContext
         synchronized(lock) {
             items[entry.key]?.let { if (it.entry.isActive) { Log.i(TAG, "${entry.key}: already queued"); return } }
@@ -143,6 +145,7 @@ object DownloadQueue {
     }
 
     fun recordFailed(context: Context, entry: DownloadEntry, error: String, retry: (() -> Unit)? = null) {
+        if (BuildConfig.STEAM_ONLY) return
         val app = context.applicationContext
         val now = System.currentTimeMillis()
         synchronized(lock) {
@@ -181,6 +184,7 @@ object DownloadQueue {
     }
 
     fun resume(context: Context, key: String) {
+        if (BuildConfig.STEAM_ONLY) return
         val app = context.applicationContext
         val retry: (() -> Unit)?
         synchronized(lock) {
@@ -294,6 +298,7 @@ object DownloadQueue {
     }
 
     private fun advance(context: Context) {
+        if (BuildConfig.STEAM_ONLY) return
         while (true) {
             val next: Item
             synchronized(lock) {

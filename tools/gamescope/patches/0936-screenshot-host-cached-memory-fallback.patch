@@ -1,0 +1,100 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -1347,80 +1347,96 @@
+ 	}
+ }
+ 
+ extern bool g_bSteamIsActiveWindow;
+ 
+ VkPipeline CVulkanDevice::pipeline(ShaderType type, uint32_t layerCount, uint32_t ycbcrMask, uint32_t blur_layers, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable)
+ {
+ 	uint32_t effective_debug = g_uCompositeDebug;
+ 	if ( g_bSteamIsActiveWindow )
+ 		effective_debug &= ~(CompositeDebugFlag::Heatmap | CompositeDebugFlag::Heatmap_MSWCG | CompositeDebugFlag::Heatmap_Hard);
+ 
+ 	std::lock_guard<std::mutex> lock(m_pipelineMutex);
+ 	PipelineInfo_t key = {type, layerCount, ycbcrMask, blur_layers, effective_debug, colorspace_mask, output_eotf, itm_enable};
+ 	auto search = m_pipelineMap.find(key);
+ 	if (search == m_pipelineMap.end())
+ 	{
+ 		VkPipeline result = compilePipeline(layerCount, ycbcrMask, type, blur_layers, effective_debug, colorspace_mask, output_eotf, itm_enable);
+ 		m_pipelineMap[key] = result;
+ 		return result;
+ 	}
+ 	else
+ 	{
+ 		return search->second;
+ 	}
+ }
+ 
+ 
+ int32_t CVulkanDevice::findMemoryType( VkMemoryPropertyFlags properties, uint32_t requiredTypeBits )
+ {
+ 	for ( uint32_t i = 0; i < m_memoryProperties.memoryTypeCount; i++ )
+ 	{
+ 		if ( ( ( 1 << i ) & requiredTypeBits ) == 0 )
+ 			continue;
+ 		
+ 		if ( ( properties & m_memoryProperties.memoryTypes[ i ].propertyFlags ) != properties )
+ 			continue;
+ 		
+ 		return i;
+ 	}
+ 
++	// HOST_CACHED improves screenshot readback speed; coherent host-visible memory is sufficient.
++	if ( properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT && properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT )
++	{
++		int32_t nFallback = findMemoryType( properties & ~VK_MEMORY_PROPERTY_HOST_CACHED_BIT, requiredTypeBits );
++		if ( nFallback >= 0 )
++		{
++			static bool s_bLogged = false;
++			if ( !s_bLogged )
++			{
++				s_bLogged = true;
++				vk_log.infof( "no memory type with properties 0x%x in type bits 0x%x; without HOST_CACHED: %d", properties, requiredTypeBits, nFallback );
++			}
++			return nFallback;
++		}
++	}
++
+ 	// A device that lists its host-visible memory without DEVICE_LOCAL (the Mali bridge models a
+ 	// unified-memory GPU that way, as a discrete one would) still has it all on the GPU: settle for
+ 	// host-visible memory rather than fail ("findMemoryType failed", then no backend).
+ 	if ( properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT )
+ 	{
+ 		int32_t nFallback = findMemoryType( properties & ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, requiredTypeBits );
+ 		static bool s_bLogged = false;
+ 		if ( !s_bLogged )
+ 		{
+ 			s_bLogged = true;
+ 			vk_log.infof( "no memory type with properties 0x%x in type bits 0x%x; without DEVICE_LOCAL: %d", properties, requiredTypeBits, nFallback );
+ 		}
+ 		if ( nFallback >= 0 )
+ 			return nFallback;
+ 	}
+ 
+ 	vk_log.errorf( "findMemoryType: no memory type with properties 0x%x in type bits 0x%x (%u types)", properties, requiredTypeBits, m_memoryProperties.memoryTypeCount );
+ 	for ( uint32_t i = 0; i < m_memoryProperties.memoryTypeCount; i++ )
+ 		vk_log.errorf( "  memory type %u: flags 0x%x heap %u", i, m_memoryProperties.memoryTypes[ i ].propertyFlags, m_memoryProperties.memoryTypes[ i ].heapIndex );
+ 	return -1;
+ }
+ 
+ std::unique_ptr<CVulkanCmdBuffer> CVulkanDevice::commandBuffer()
+ {
+ 	std::unique_ptr<CVulkanCmdBuffer> cmdBuffer;
+ 	if (m_unusedCmdBufs.empty())
+ 	{
+ 		VkCommandBuffer rawCmdBuffer;
+ 		VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+ 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+ 			.commandPool = m_commandPool,
+ 			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+ 			.commandBufferCount = 1
+ 		};
+ 
+ 		VkResult res = vk.AllocateCommandBuffers( device(), &commandBufferAllocateInfo, &rawCmdBuffer );
+ 		if ( res != VK_SUCCESS )
+ 		{
+ 			vk_errorf( res, "vkAllocateCommandBuffers failed" );
+ 			return nullptr;

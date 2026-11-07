@@ -185,6 +185,9 @@ jobs:
             "$tools/aapt" dump badging "$1" | sed -n "s/^package: name='\\([^']*\\)' versionCode='\\([^']*\\)'.*/\\1 \\2/p"
           }
           candidate=$(package_line "${apks[0]}")
+          if [[ "${candidate%% *}" == com.droiddeck.launcher.steam ]]; then
+            echo "::error::Steam-only APKs install alongside DroidDeck and require a dedicated release catalog; official all-store publication is unsupported"; exit 1
+          fi
           [[ "$candidate" =~ ^com\.droiddeck\.launcher\ [0-9]+$ && ${candidate##* } -ge $main_code ]] || {
             echo "::error::PR package/versionCode '$candidate' cannot install over main (versionCode $main_code)"; exit 1;
           }
@@ -248,9 +251,10 @@ jobs:
         run: |
           set -euo pipefail
           gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n droiddeck-packs -D packs
+          pack_names=$(python3 tools/packs/profile.py verify packs)
           mkdir -p pr-packs
-          for file in packs/*.tar.zst; do
-            name=$(basename "$file" .tar.zst)
+          for name in $pack_names; do
+            file="packs/$name.tar.zst"
             sha=$(sha256sum "$file" | cut -d' ' -f1)
             tag="pack-$name-${sha:0:16}"
             digest=$({ gh api "repos/Droid-Deck/DroidDeck-Components/releases/tags/$tag" 2>/dev/null || echo '{}'; } |

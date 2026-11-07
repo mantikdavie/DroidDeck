@@ -22,6 +22,10 @@ import org.robolectric.shadows.ShadowStatFs
 class DownloadQueueRetryTest {
     private val app get() = RuntimeEnvironment.getApplication()
 
+    @org.junit.Before fun enabledStoreBuild() {
+        org.junit.Assume.assumeFalse(com.droiddeck.launcher.BuildConfig.STEAM_ONLY)
+    }
+
     @After fun cleanRows() { DownloadQueue.dismissFinished(); StoreSizes.known.clear() }
 
     private fun awaitFailure(key: String, error: String) {

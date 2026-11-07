@@ -105,10 +105,10 @@ internal fun DesktopPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
     val narrow = LocalNarrowPane.current
     val short = compactDesktop()
     val colors = MaterialTheme.colorScheme
-    LaunchedEffect(Unit) { UserAppsState.refresh(ctx) }
-    LaunchedEffect(s.ready) { com.droiddeck.launcher.store.StoreState.refresh(ctx) }
-    val installed = s.emulators.filter { it.installed }
-    val apps = UserAppsState.items
+    LaunchedEffect(Unit) { if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) UserAppsState.refresh(ctx) }
+    LaunchedEffect(s.ready) { if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) com.droiddeck.launcher.store.StoreState.refresh(ctx) }
+    val installed = if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) emptyList() else s.emulators.filter { it.installed }
+    val apps = if (com.droiddeck.launcher.BuildConfig.STEAM_ONLY) emptyList() else UserAppsState.items
     var adding by rememberSaveable { mutableStateOf(false) }
     val mode = SessionService.MODE_DESKTOP
     val tabs = DESKTOP_TABS.map { it to sheetTabLabel(it) }
@@ -129,7 +129,7 @@ internal fun DesktopPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
         scrim = { lifted ->
             WallFade()
             Box(Modifier.graphicsLayer { val v = lifted(); alpha = 1f - v; translationY = -12.dp.toPx() * v }) {
-                DesktopDock(s, a, installed, apps, openFrom = ::openFrom)
+                if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) DesktopDock(s, a, installed, apps, openFrom = ::openFrom)
             }
         },
         words = {
@@ -149,8 +149,10 @@ internal fun DesktopPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
                 horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
             ) {
-                HeroIconButton(Icons.Outlined.Storefront, stringResource(R.string.flathub_name), FlathubTeal, "desktop:flathub") { at -> openFrom(at, null, "store") }
-                HeroIconButton(Icons.Filled.Add, stringResource(R.string.user_apps_add), null, "desktop:add") { if (!s.busy) adding = true }
+                if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) {
+                    HeroIconButton(Icons.Outlined.Storefront, stringResource(R.string.flathub_name), FlathubTeal, "desktop:flathub") { at -> openFrom(at, null, "store") }
+                    HeroIconButton(Icons.Filled.Add, stringResource(R.string.user_apps_add), null, "desktop:add") { if (!s.busy) adding = true }
+                }
                 if (s.desktopPresent) UninstallDesktop(enabled = !s.runtimeActionsBlocked, onUninstall = a.onRemoveDesktop)
             }
         },
@@ -159,7 +161,7 @@ internal fun DesktopPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
             else a.modeSheet(mode, tab, SheetExtras())
         },
     )
-    if (adding && !s.busy) AddAppDialog(s.ready, onDismiss = { adding = false }) { request, label -> UserAppsState.add(ctx, request, label) }
+    if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY && adding && !s.busy) AddAppDialog(s.ready, onDismiss = { adding = false }) { request, label -> UserAppsState.add(ctx, request, label) }
 }
 
 @Composable
@@ -363,7 +365,7 @@ private fun DesktopFiles(s: FrontEndState, a: FrontEndActions) {
         SettingsRow(stringResource(R.string.setup_tool_files), stringResource(R.string.setup_tool_files_hint)) {
             SecondaryButton(stringResource(R.string.store_open), compact = true, onClick = a.onFiles)
         }
-        SettingsRow(stringResource(R.string.setup_tool_roms), s.romsDir ?: stringResource(R.string.setup_tool_roms_hint)) {
+        if (!com.droiddeck.launcher.BuildConfig.STEAM_ONLY) SettingsRow(stringResource(R.string.setup_tool_roms), s.romsDir ?: stringResource(R.string.setup_tool_roms_hint)) {
             SecondaryButton(stringResource(R.string.setup_choose), compact = true, onClick = a.onRoms)
         }
     }

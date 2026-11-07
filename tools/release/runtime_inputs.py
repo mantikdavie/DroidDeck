@@ -2,6 +2,7 @@ import hashlib
 import gzip
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,9 @@ PACKED_FILES = {'lib/arm64-v8a/libproot.so': ('proot', 'libproot.so'),
                 'lib/arm64-v8a/libproot-loader.so': ('proot', 'libproot-loader.so')}
 PACKED_LIBRARIES = ['lib/arm64-v8a/libopencv_java4.so', 'lib/arm64-v8a/libmediapipe_tasks_jni.so']
 PACK_NAMES = ['proot', 'directaudio', 'tracking', 'xbox', 'comet', 'butler', 'powervr']
+STORE_PACKS = {'xbox', 'comet', 'butler'}
+STORE_TREES = ('assets/linuxfs/usr/local/lib/droiddeck-xbox/',
+               'assets/linuxfs/usr/local/lib/droiddeck-comet/')
 SOURCE_PATHS = ['app/build.gradle', 'app/src/main/cpp/fakeinput_steam.cpp', 'app/src/main/assets/pulseaudio.tzst',
                 'tools/linuxfs', 'tools/proot', 'tools/aaudio-sink', 'tools/directaudio', 'tools/packs',
                 'tools/gamescope/release.env', 'tools/droiddeck-esync/release.env',
@@ -44,22 +48,40 @@ def digest(path):
     return result.hexdigest()
 
 
-def sources(root):
+def steam_profile(steam_only=None):
+    if steam_only is not None:
+        return steam_only
+    value = os.environ.get('DROIDDECK_STEAM_ONLY', 'true').lower()
+    if value not in ('true', 'false', '1', '0'):
+        raise ValueError('DROIDDECK_STEAM_ONLY must be true or false')
+    return value in ('true', '1')
+
+
+def pack_names(steam_only=None):
+    return [name for name in PACK_NAMES if not steam_profile(steam_only) or name not in STORE_PACKS]
+
+
+def sources(root, steam_only=None):
     files = []
     for name in SOURCE_PATHS:
+        if steam_profile(steam_only) and name in ('tools/comet', 'tools/xbox'):
+            continue
         path = root / name
         files.extend(path.rglob('*') if path.is_dir() else [path])
     return {path.relative_to(root).as_posix(): digest(path) for path in sorted(set(files))
-            if path.is_file() and '__pycache__' not in path.parts and path.suffix != '.pyc'}
+            if path.is_file() and '__pycache__' not in path.parts and path.suffix != '.pyc'
+            and not (steam_profile(steam_only) and path.is_relative_to(root / 'tools/packs/butler'))}
 
 
-def outputs(root):
+def outputs(root, steam_only=None):
     result = {}
     for tree in ['linuxfs', 'directaudio', 'droiddeck-esync', 'desktop-removal', 'hybris']:
         base = root / 'app/src/main/assets' / tree
         for path in base.rglob('*'):
             if path.is_file() and not any(part.startswith('.') for part in path.relative_to(base).parts):
-                result['assets/' + tree + '/' + path.relative_to(base).as_posix()] = path.relative_to(root).as_posix()
+                name = 'assets/' + tree + '/' + path.relative_to(base).as_posix()
+                if not (steam_profile(steam_only) and name.startswith(STORE_TREES)):
+                    result[name] = path.relative_to(root).as_posix()
     for library in ['libproot.so', 'libproot-loader.so', 'libdirectaudiorelay.so']:
         result['lib/arm64-v8a/' + library] = 'app/src/main/jniLibs/arm64-v8a/' + library
     result['assets/pulseaudio.tzst'] = 'app/build/prepared-assets/pulseaudio.tzst'
@@ -71,7 +93,7 @@ def outputs(root):
     return result
 
 
-def required():
+def required(steam_only=None):
     paths = ['assets/graphics_driver/adrenotools-turnip25.1.0-quest1.tzst']
     paths += [f'assets/graphics_driver/adrenotools-{name}.tzst'
               for name in ['turnip26.3.0-a6xx', 'turnip26.3.0-quest2']]
@@ -120,7 +142,7 @@ def required():
               ['lxqt-r1.tsv.gzip', 'kde-remove.tsv.gzip', 'kde-keep.txt.gzip',
                'emulators-keep.txt.gzip', 'versions.txt', 'sources.json']]
     paths += ['assets/hybris/runtime.tzst', 'assets/hybris/version.txt']
-    return paths
+    return [name for name in paths if not (steam_profile(steam_only) and name.startswith(STORE_TREES))]
 
 
 def verify_powervr(root):
@@ -130,15 +152,23 @@ def verify_powervr(root):
     module.verify(root)
 
 
-def record(root=ROOT):
+def verify_pack_profile(root, steam_only):
+    spec = importlib.util.spec_from_file_location('pack_profile', ROOT / 'tools/packs/profile.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.verify(root / PACKS, 'steam-only' if steam_only else 'all-stores')
+
+
+def record(root=ROOT, steam_only=None):
+    steam_only = steam_profile(steam_only)
     if root == ROOT:
         from check_session_assets import source_assets
         for source, asset in source_assets().items():
             target = root / 'app/src/main' / asset
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
-    paths = outputs(root)
-    missing = [name for name in required() if name not in paths or not (root / paths[name]).is_file()]
+    paths = outputs(root, steam_only)
+    missing = [name for name in required(steam_only) if name not in paths or not (root / paths[name]).is_file()]
     if missing:
         raise ValueError('Missing runtime inputs:\n' + '\n'.join(missing))
     verify_powervr(root)
@@ -159,19 +189,25 @@ def record(root=ROOT):
     for name in ['pactl', 'modules/arm64/module-aaudio-sink.so', 'modules/arm64/module-directaudio-native-sink.so']:
         if name not in names:
             raise ValueError('Audio bundle missing ' + name)
-    data = {'version': 1, 'sources': sources(root), 'outputs': {
+    verify_pack_profile(root, steam_only)
+    data = {'version': 2, 'steamOnly': steam_only, 'packs': pack_names(steam_only),
+            'sources': sources(root, steam_only), 'outputs': {
         name: {'path': path, 'sha256': digest(root / path)} for name, path in sorted(paths.items())}}
     (root / MANIFEST).write_text(json.dumps(data, sort_keys=True, indent=2) + '\n')
 
 
-def verify(root=ROOT, stale_sources_ok=False):
+def verify(root=ROOT, stale_sources_ok=False, steam_only=None):
+    steam_only = steam_profile(steam_only)
     try:
         data = json.loads((root / MANIFEST).read_text())
     except (OSError, ValueError):
         raise ValueError('Runtime inputs have not been prepared. Run tools/build_local.sh.')
-    if data.get('version') != 1:
+    if data.get('version') != 2:
         raise ValueError('Runtime sources changed since preparation. Run tools/build_local.sh.')
-    current = sources(root)
+    if data.get('steamOnly') != steam_only or data.get('packs') != pack_names(steam_only):
+        raise ValueError('Runtime build profile changed since preparation. Run tools/build_local.sh.')
+    verify_pack_profile(root, steam_only)
+    current = sources(root, steam_only)
     if data.get('sources') != current:
         if not stale_sources_ok:
             raise ValueError('Runtime sources changed since preparation. Run tools/build_local.sh.')
@@ -179,14 +215,14 @@ def verify(root=ROOT, stale_sources_ok=False):
         changed = sorted(name for name in recorded.keys() | current.keys() if recorded.get(name) != current.get(name))
         print('Warning: reusing runtime assets prepared from other sources (run tools/build_local.sh if these matter):\n  '
               + '\n  '.join(changed[:20]) + ('\n  ...' if len(changed) > 20 else ''), file=sys.stderr)
-    for name in required():
+    for name in required(steam_only):
         if name not in data['outputs']:
             raise ValueError('Runtime manifest missing ' + name)
     for name, output in data['outputs'].items():
         path = root / output['path']
         if not path.is_file() or digest(path) != output['sha256']:
             raise ValueError('Missing or changed runtime input: ' + name + '. Run tools/build_local.sh.')
-    if outputs(root) != {name: output['path'] for name, output in data['outputs'].items()}:
+    if outputs(root, steam_only) != {name: output['path'] for name, output in data['outputs'].items()}:
         raise ValueError('Runtime file set changed. Run tools/build_local.sh.')
     return data
 
@@ -209,11 +245,26 @@ def pack_digests(root, name):
     return digests
 
 
-def check_apk(apk, root=ROOT):
-    data = verify(root)
-    packs = {name: pack_digests(root, name) for name in PACK_NAMES}
+def check_apk(apk, root=ROOT, steam_only=None):
+    steam_only = steam_profile(steam_only)
+    data = verify(root, steam_only=steam_only)
+    packs = {name: pack_digests(root, name) for name in pack_names(steam_only)}
     with ZipFile(apk) as package:
         names = set(package.namelist())
+        if steam_only:
+            forbidden = [name for name in names if name.startswith((*STORE_TREES, 'assets/xcloud/'))
+                         or (name.startswith('lib/') and name.endswith('/libdroiddeckstores.so'))
+                         or name in {f'assets/packs/{pack}.tar.zst' for pack in STORE_PACKS}]
+            if forbidden:
+                raise ValueError('Steam-only APK contains non-Steam payload: ' + sorted(forbidden)[0])
+        embedded = {name for name in names if name.startswith('assets/packs/') and name.endswith('.tar.zst')}
+        if embedded:
+            expected = {f'assets/packs/{name}.tar.zst' for name in packs}
+            if embedded != expected:
+                raise ValueError('APK add-on pack set does not match the runtime build profile')
+            for name in packs:
+                if hashlib.sha256(package.read(f'assets/packs/{name}.tar.zst')).hexdigest() != digest(root / PACKS / (name + '.tar.zst')):
+                    raise ValueError('APK has stale add-on pack: ' + name)
         for library in PACKED_LIBRARIES:
             if library in names:
                 raise ValueError('APK still carries ' + library + ', which the tracking pack provides')
@@ -244,12 +295,13 @@ def check_apk(apk, root=ROOT):
 
 if __name__ == '__main__':
     try:
+        mode = True if '--steam-only' in sys.argv else False if '--all-stores' in sys.argv else None
         if sys.argv[1] == 'record':
-            record()
+            record(steam_only=mode)
         elif sys.argv[1] == 'verify':
-            verify(stale_sources_ok='--allow-stale-sources' in sys.argv[2:])
+            verify(stale_sources_ok='--allow-stale-sources' in sys.argv[2:], steam_only=mode)
         elif sys.argv[1] == 'apk':
-            check_apk(sys.argv[2])
+            check_apk(sys.argv[2], steam_only=mode)
         else:
             raise ValueError('Expected record, verify or apk <path>')
     except (ValueError, OSError) as error:

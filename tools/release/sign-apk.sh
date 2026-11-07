@@ -9,10 +9,17 @@ repo=$(cd "$here/../.." && pwd)
 
 pkg=$(awk -v v="$variant" '!/^#/ && $1 == v { print $2 }' "$here/variants.txt")
 [ -n "$pkg" ] || die "no variant '$variant' in tools/release/variants.txt"
+: "${BUILD_TOOLS:?}"
+P=$("$BUILD_TOOLS/aapt" dump badging "$in" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+case "$P" in
+  com.droiddeck.launcher) ;;
+  com.droiddeck.launcher.steam) die "Steam-only APKs install alongside DroidDeck and require a dedicated release catalog; official all-store signing is unsupported" ;;
+  *) die "input APK is not an official all-store DroidDeck build: $P" ;;
+esac
 expected=${RELEASE_SIGNER_SHA256:-$(tr -d ' \n' < "$repo/keystore/release-signer.sha256" 2>/dev/null || true)}
 [[ $expected =~ ^[0-9a-f]{64}$ ]] \
   || die "keystore/release-signer.sha256 is missing: make the key first (tools/release/make-release-key.sh)"
-: "${RELEASE_KEYSTORE:?}" "${RELEASE_STORE_PASSWORD:?}" "${RELEASE_KEY_ALIAS:?}" "${BUILD_TOOLS:?}"
+: "${RELEASE_KEYSTORE:?}" "${RELEASE_STORE_PASSWORD:?}" "${RELEASE_KEY_ALIAS:?}"
 [ -s "$RELEASE_KEYSTORE" ] || die "the release keystore is empty - is the secret set for this environment?"
 
 TESTKEY="$repo/keystore/testkey.p12"
@@ -21,7 +28,6 @@ export TESTKEY_PASSWORD=android
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-P=com.droiddeck.launcher
 if [ "$pkg" = "$P" ]; then
   python3 "$here/axml_rename.py" "$in" "$work/renamed.apk"
 else

@@ -2,6 +2,7 @@ package com.droiddeck.launcher.stores.download
 
 import android.content.Context
 import android.util.Log
+import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.stores.CatalogItem
 import com.droiddeck.launcher.stores.Store
 import com.droiddeck.launcher.stores.StoresState
@@ -25,11 +26,13 @@ object SavedQueue {
 
     @Synchronized
     fun remember(context: Context, item: CatalogItem, root: File?) {
+        if (BuildConfig.STEAM_ONLY) return
         app = context.applicationContext
         wanted[key(item)] = Wanted(item, root)
     }
 
     fun save(entries: List<DownloadEntry>) {
+        if (BuildConfig.STEAM_ONLY) return
         val context = app ?: return
         val rows = synchronized(this) {
             entries.filter { it.isActive }.mapNotNull { e -> wanted[e.key]?.let { e to it } }
@@ -51,6 +54,7 @@ object SavedQueue {
     }
 
     fun restore(context: Context) {
+        if (BuildConfig.STEAM_ONLY) return
         synchronized(this) { if (restored) return; restored = true }
         val app = context.applicationContext
         val rows = runCatching { JSONArray(File(app.filesDir, FILE).readText()) }.getOrNull()
