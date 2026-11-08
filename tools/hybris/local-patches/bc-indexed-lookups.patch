@@ -1,0 +1,255 @@
+--- a/hybris/vulkan/compat/bc_transfer.c
++++ b/hybris/vulkan/compat/bc_transfer.c
+@@ -139,6 +139,9 @@
+         image->decoded_format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+     uint32_t max_width = (uint32_t)(t->scratch_size / (16 * texel_bytes)) * 4;
+     if (!max_width) return VK_ERROR_FORMAT_NOT_SUPPORTED;
++    VkBool32 share_descriptors = image->block_size > 0 &&
++        image->block_size <= t->limits->maxStorageBufferRange;
++    VkDescriptorSet shared_set = VK_NULL_HANDLE;
+     for (uint32_t layer = 0; layer < region->imageSubresource.layerCount; ++layer) {
+         for (uint32_t y = 0; y < region->imageExtent.height; y += 4) {
+             uint32_t height = region->imageExtent.height - y;
+@@ -157,22 +160,29 @@
+                 if (!available) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+                 if ((width + UINT64_C(3)) / 4 > available) width = (uint32_t)(available * 4);
+                 VkDeviceSize range = source - base + ((width + UINT64_C(3)) / 4) * image->block_bytes;
+-                VkDescriptorSet set;
+-                result = descriptors(t, &set);
+-                if (result != VK_SUCCESS) return result;
+-                VkDescriptorBufferInfo buffers[2] = {
+-                    {.buffer = image->blocks, .offset = base, .range = range},
+-                    {.buffer = t->scratch, .range = ((VkDeviceSize)width * height * texel_bytes + 3) & ~UINT64_C(3)}};
+-                VkWriteDescriptorSet writes[2] = {0};
+-                for (uint32_t i = 0; i < 2; ++i) {
+-                    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+-                    writes[i].dstSet = set;
+-                    writes[i].dstBinding = i;
+-                    writes[i].descriptorCount = 1;
+-                    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+-                    writes[i].pBufferInfo = &buffers[i];
++                VkDeviceSize descriptor_base = share_descriptors ? 0 : base;
++                VkDeviceSize descriptor_range = share_descriptors ? image->block_size : range;
++                VkDeviceSize destination_range = share_descriptors ? t->scratch_size :
++                    ((VkDeviceSize)width * height * texel_bytes + 3) & ~UINT64_C(3);
++                VkDescriptorSet set = shared_set;
++                if (!set) {
++                    result = descriptors(t, &set);
++                    if (result != VK_SUCCESS) return result;
++                    VkDescriptorBufferInfo buffers[2] = {
++                        {.buffer = image->blocks, .offset = descriptor_base, .range = descriptor_range},
++                        {.buffer = t->scratch, .range = destination_range}};
++                    VkWriteDescriptorSet writes[2] = {0};
++                    for (uint32_t i = 0; i < 2; ++i) {
++                        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++                        writes[i].dstSet = set;
++                        writes[i].dstBinding = i;
++                        writes[i].descriptorCount = 1;
++                        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++                        writes[i].pBufferInfo = &buffers[i];
++                    }
++                    UpdateDescriptorSets(t->decoder->device, 2, writes, 0, NULL);
++                    if (share_descriptors) shared_set = set;
+                 }
+-                UpdateDescriptorSets(t->decoder->device, 2, writes, 0, NULL);
+                 /* Include the first use: the same recording can be submitted
+                  * again, with the preceding execution still reading scratch. */
+                 buffer_barrier(t, command, t->scratch, VK_PIPELINE_STAGE_TRANSFER_BIT,
+@@ -181,8 +191,8 @@
+                     .rgb16 = image->decoded_format == VK_FORMAT_R16G16B16_SFLOAT,
+                     .rgb8 = image->decoded_format == VK_FORMAT_R8G8B8_UNORM || image->decoded_format == VK_FORMAT_R8G8B8_SRGB,
+                     .width = width, .height = height, .layers = 1,
+-                    .source_offset = source - base, .source_range = range,
+-                    .destination_range = buffers[1].range};
++                    .source_offset = source - descriptor_base, .source_range = descriptor_range,
++                    .destination_range = destination_range};
+                 result = hybris_bc_decode_record(t->decoder, command, set, &decoding, t->limits);
+                 if (result != VK_SUCCESS) return result;
+                 buffer_barrier(t, command, t->scratch, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+--- a/hybris/vulkan/compat/bc_context.h
++++ b/hybris/vulkan/compat/bc_context.h
+@@ -2,6 +2,19 @@
+ #ifndef HYBRIS_BC_CONTEXT_H
+ #define HYBRIS_BC_CONTEXT_H
+ #include "bc_transfer.h"
++
++#define HYBRIS_BC_COMMAND_BUCKETS 256u
++#define HYBRIS_BC_IMAGE_BUCKETS 1024u
++
++static inline uint32_t hybris_bc_handle_bucket(uint64_t handle, uint32_t buckets)
++{
++    handle ^= handle >> 33;
++    handle *= UINT64_C(0xff51afd7ed558ccd);
++    handle ^= handle >> 33;
++    handle *= UINT64_C(0xc4ceb9fe1a85ec53);
++    handle ^= handle >> 33;
++    return (uint32_t)handle & (buckets - 1);
++}
+ 
+ struct hybris_bc_command {
+     VkCommandBuffer handle;
+@@ -9,6 +22,7 @@
+     struct hybris_bc_command_state state;
+     struct hybris_bc_transfer transfer;
+     struct hybris_bc_command *next;
++    struct hybris_bc_command *hash_next;
+ };
+ struct hybris_bc_resource {
+     VkImage handle;
+@@ -20,6 +34,7 @@
+     VkAllocationCallbacks allocator;
+     int custom_allocator;
+     struct hybris_bc_resource *next;
++    struct hybris_bc_resource *hash_next;
+ };
+ struct hybris_bc_device {
+     VkDevice handle;
+@@ -34,6 +49,8 @@
+     pthread_mutex_t guard;
+     struct hybris_bc_resource *images;
+     struct hybris_bc_command *commands;
++    struct hybris_bc_command *command_buckets[HYBRIS_BC_COMMAND_BUCKETS];
++    struct hybris_bc_resource *image_buckets[HYBRIS_BC_IMAGE_BUCKETS];
+     struct hybris_bc_device *next;
+ };
+ VkResult hybris_bc_device_add(VkDevice handle, PFN_vkGetDeviceProcAddr resolver,
+@@ -43,6 +60,11 @@
+ struct hybris_bc_device *hybris_bc_device_find(VkDevice handle);
+ struct hybris_bc_command *hybris_bc_command_find(VkCommandBuffer handle, struct hybris_bc_device **owner);
+ struct hybris_bc_resource *hybris_bc_resource_find(struct hybris_bc_device *device, VkImage handle);
++/* Index mutations share device->guard with the owning lists. */
++void hybris_bc_command_index_add(struct hybris_bc_device *device, struct hybris_bc_command *command);
++void hybris_bc_command_index_remove(struct hybris_bc_device *device, struct hybris_bc_command *command);
++void hybris_bc_resource_index_add(struct hybris_bc_device *device, struct hybris_bc_resource *image);
++void hybris_bc_resource_index_remove(struct hybris_bc_device *device, struct hybris_bc_resource *image);
+ void *hybris_bc_alloc(struct hybris_bc_device *device, size_t size);
+ void hybris_bc_free(struct hybris_bc_device *device, void *memory);
+ void hybris_bc_command_retire(struct hybris_bc_command *command);
+--- a/hybris/vulkan/compat/bc_context.c
++++ b/hybris/vulkan/compat/bc_context.c
+@@ -58,11 +58,12 @@
+ struct hybris_bc_command *hybris_bc_command_find(VkCommandBuffer handle, struct hybris_bc_device **owner)
+ {
+     struct hybris_bc_command *command = NULL;
++    uint32_t bucket = hybris_bc_handle_bucket((uintptr_t)handle, HYBRIS_BC_COMMAND_BUCKETS);
+     *owner = NULL;
+     pthread_mutex_lock(&guard);
+     for (struct hybris_bc_device *device = devices; device && !command; device = device->next) {
+         pthread_mutex_lock(&device->guard);
+-        for (command = device->commands; command && command->handle != handle; command = command->next) {}
++        for (command = device->command_buckets[bucket]; command && command->handle != handle; command = command->hash_next) {}
+         if (command) *owner = device;
+         pthread_mutex_unlock(&device->guard);
+     }
+@@ -71,11 +72,40 @@
+ }
+ struct hybris_bc_resource *hybris_bc_resource_find(struct hybris_bc_device *device, VkImage handle)
+ {
++    uint32_t bucket = hybris_bc_handle_bucket((uint64_t)handle, HYBRIS_BC_IMAGE_BUCKETS);
+     pthread_mutex_lock(&device->guard);
+-    struct hybris_bc_resource *image = device->images;
+-    while (image && image->handle != handle) image = image->next;
++    struct hybris_bc_resource *image = device->image_buckets[bucket];
++    while (image && image->handle != handle) image = image->hash_next;
+     pthread_mutex_unlock(&device->guard);
+     return image;
++}
++void hybris_bc_command_index_add(struct hybris_bc_device *device, struct hybris_bc_command *command)
++{
++    uint32_t bucket = hybris_bc_handle_bucket((uintptr_t)command->handle, HYBRIS_BC_COMMAND_BUCKETS);
++    command->hash_next = device->command_buckets[bucket];
++    device->command_buckets[bucket] = command;
++}
++void hybris_bc_command_index_remove(struct hybris_bc_device *device, struct hybris_bc_command *command)
++{
++    uint32_t bucket = hybris_bc_handle_bucket((uintptr_t)command->handle, HYBRIS_BC_COMMAND_BUCKETS);
++    struct hybris_bc_command **link = &device->command_buckets[bucket];
++    while (*link && *link != command) link = &(*link)->hash_next;
++    if (*link) *link = command->hash_next;
++    command->hash_next = NULL;
++}
++void hybris_bc_resource_index_add(struct hybris_bc_device *device, struct hybris_bc_resource *image)
++{
++    uint32_t bucket = hybris_bc_handle_bucket((uint64_t)image->handle, HYBRIS_BC_IMAGE_BUCKETS);
++    image->hash_next = device->image_buckets[bucket];
++    device->image_buckets[bucket] = image;
++}
++void hybris_bc_resource_index_remove(struct hybris_bc_device *device, struct hybris_bc_resource *image)
++{
++    uint32_t bucket = hybris_bc_handle_bucket((uint64_t)image->handle, HYBRIS_BC_IMAGE_BUCKETS);
++    struct hybris_bc_resource **link = &device->image_buckets[bucket];
++    while (*link && *link != image) link = &(*link)->hash_next;
++    if (*link) *link = image->hash_next;
++    image->hash_next = NULL;
+ }
+ void hybris_bc_command_retire(struct hybris_bc_command *command)
+ {
+@@ -92,6 +122,8 @@
+     if (device) *link = device->next;
+     pthread_mutex_unlock(&guard);
+     if (!device) return;
++    memset(device->command_buckets, 0, sizeof(device->command_buckets));
++    memset(device->image_buckets, 0, sizeof(device->image_buckets));
+     while (device->commands) {
+         struct hybris_bc_command *next = device->commands->next;
+         hybris_bc_command_retire(device->commands);
+--- a/hybris/vulkan/compat/bc_commands.c
++++ b/hybris/vulkan/compat/bc_commands.c
+@@ -35,6 +35,7 @@
+         first->handle = handles[i];
+         first->next = device->commands;
+         device->commands = first;
++        hybris_bc_command_index_add(device, first);
+         first = next;
+     }
+     pthread_mutex_unlock(&device->guard);
+@@ -46,7 +47,10 @@
+     struct hybris_bc_command **link = &device->commands;
+     while (*link && (*link)->handle != handle) link = &(*link)->next;
+     struct hybris_bc_command *command = *link;
+-    if (command) *link = command->next;
++    if (command) {
++        *link = command->next;
++        hybris_bc_command_index_remove(device, command);
++    }
+     pthread_mutex_unlock(&device->guard);
+     if (command) { hybris_bc_command_retire(command); hybris_bc_free(device, command); }
+ }
+@@ -105,6 +109,7 @@
+         struct hybris_bc_command *command = *link;
+         if (command->pool != pool) { link = &command->next; continue; }
+         *link = command->next;
++        hybris_bc_command_index_remove(device, command);
+         command->next = retired;
+         retired = command;
+     }
+@@ -126,6 +131,7 @@
+         struct hybris_bc_command *next = retired->next;
+         retired->next = device->commands;
+         device->commands = retired;
++        hybris_bc_command_index_add(device, retired);
+         retired = next;
+     }
+     pthread_mutex_unlock(&device->guard);
+--- a/hybris/vulkan/compat/bc_resources.c
++++ b/hybris/vulkan/compat/bc_resources.c
+@@ -44,6 +44,7 @@
+     pthread_mutex_lock(&device->guard);
+     resource->next = device->images;
+     device->images = resource;
++    hybris_bc_resource_index_add(device, resource);
+     pthread_mutex_unlock(&device->guard);
+     return VK_SUCCESS;
+ }
+@@ -55,7 +56,10 @@
+     struct hybris_bc_resource **link = &device->images;
+     while (*link && (*link)->handle != image) link = &(*link)->next;
+     struct hybris_bc_resource *resource = *link;
+-    if (resource) *link = resource->next;
++    if (resource) {
++        *link = resource->next;
++        hybris_bc_resource_index_remove(device, resource);
++    }
+     pthread_mutex_unlock(&device->guard);
+     if (resource && resource->emulated.image) hybris_bc_image_destroy(&resource->emulated, allocator);
+     else { PROC(DestroyImage); DestroyImage(handle, image, allocator); }
