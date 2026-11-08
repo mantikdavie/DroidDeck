@@ -88,3 +88,62 @@ Local diagnostic evidence is intentionally excluded from version control:
 `build/device/digimon-hybris-descriptor-reuse/{independent-review.md,mock/comparison.json}`,
 `build/device/digimon-bc-reuse-r5-comparison.json`, and
 `build/device/digimon-bc-r6-{steady-memory,thermal1,pacing1,pacing2}.json`.
+
+## Optional lookup indexes and upload batching
+
+The Vulkan compatibility layer also performs command-buffer and image lookups
+while recording ordinary frames. Its original registries scan ownership lists,
+including non-BC images. An opt-in diagnostic build sampled one lookup in 1,024
+and emitted cumulative per-thread counts, traversal lengths and CPU/wall time.
+It retained the original locking and used the same sampler for both variants.
+
+`tools/hybris/local-patches/bc-indexed-lookups.patch` combines descriptor reuse
+with fixed per-device command/image hash buckets. Ownership lists remain for
+pool and device cleanup; all index mutations use the existing locks. It adds
+10 KiB per device and one pointer per command/image node on AArch64, with no
+additional allocation or failure path during lookup/insertion. Apply this patch
+instead of the descriptor-only or batching alternatives, never on top of them.
+The [lifecycle regression](../hybris/tests/indexed_lookups/README.md) exercises
+actual registry entry points with mocked native Vulkan operations. Baseline and
+candidate passed normal, ASan, UBSan and leak checks with identical outcomes,
+including collisions, handle reuse, allocator failures, pool reset/destruction,
+multi-device handles and concurrent operations on distinct objects.
+
+On the Pixel, the indexed layer matched all 780 `BC_IMAGES_*` output lines from
+the 336-readback baseline and passed 24 synthetic BC1 sampling/render-target
+cases with identical readback hashes. The original 6,837 filtered-reference
+discrepancies remained unchanged; this is equivalence, not full conformance.
+Its formal local component and the tested DSO are byte-identical.
+
+The diagnostic game samples measured the following per-call averages:
+
+| Lookup | Baseline nodes | Indexed nodes | Baseline CPU time | Indexed CPU time |
+| --- | ---: | ---: | ---: | ---: |
+| Command buffer | 484.97 | 2.70 | 5.21 microseconds | 2.39 microseconds |
+| Image | 1,875.40 | 2.47 | 35.32 microseconds | 2.40 microseconds |
+
+These figures include timer and sampled node-counting overhead. The character
+and camera moved during the indexed run, so the lookup populations differ.
+The 20.3 versus 16.5 presented-FPS samples and 93.4% versus 51.6% command-thread
+CPU samples are not controlled comparisons and establish neither a frame-rate
+gain nor a regression. Battery readings were 40.6 and 41.3 degrees Celsius,
+both with `SEVERE` thermal status. Session 50 is excluded entirely because
+runtime-path verification found that session initialization had restored the
+managed baseline. Only session 51 loaded the indexed diagnostic DSO. Both
+compared game logs had no Vulkan error, BC transfer-end error, command-stream
+exception or unhandled exception.
+
+The separate [full-width batching candidate](../hybris/tests/row_batching/README.md)
+combines descriptor reuse with larger decode batches within the existing 64 KiB
+scratch buffer. Its canonical coverage regression, native Mesa control and Pixel
+336-readback/24-synthetic-case comparisons passed equivalence checks. It reduces
+upload command counts for eligible widths without changing decoded texture
+residency. It is not included in the indexed candidate APK, and resident frames
+without BC uploads cannot benefit directly from this batching path.
+
+The indexed APK was built from `deeda030`, with guarded GCC DXVK unchanged.
+Embedded component identity, source provenance, runtime inputs, native library
+dependencies, alignment and v1/v2/v3 signatures passed verification. Diagnostic
+DSOs and counters are excluded from that APK. Local evidence and the candidate
+APK receipt are under ignored `build/device/digimon-perf-r8/`; reproducible
+source regressions are checked in under `tools/hybris/tests/`.
