@@ -10,8 +10,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Substitute only external source/compiler/archive commands. The real build.sh
-# owns output checks, architecture iteration and manifest inputs.
+# Source and compiler commands are synthetic here; component verification has
+# separate tests. The real build.sh owns output isolation and architecture order.
 FAKE_TOOL = r'''
 import hashlib, json, os
 from pathlib import Path
@@ -36,13 +36,17 @@ elif name == 'meson':
         config = json.loads(Path(args[2], 'config.json').read_text())
         out = Path(config['out'], config['arch']); out.mkdir(exist_ok=True)
         out.joinpath('current.dll').write_bytes(b'synthetic current pinned DLL')
+        out.joinpath('d3d11.dll.a').write_bytes(b'synthetic import library')
         if config['arch'] == os.environ.get('FAIL_INSTALL_ARCH'):
             sys.exit(5)
-elif name == 'tar':
-    Path(args[args.index('-cf') + 1]).write_bytes(b'synthetic source archive')
-elif name == 'sha256sum':
-    for arg in args:
-        print(hashlib.sha256(Path(arg).read_bytes()).hexdigest() + '  ' + arg)
+elif name == 'python3' and Path(args[0]).name == 'component.py':
+    assert args[1] == 'record' and args[3] == '--source'
+    if os.environ.get('FAIL_RECORD'): sys.exit(6)
+    out = Path(args[2])
+    rows = [hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + str(path.relative_to(out))
+            for path in sorted(out.glob('x*/*.dll'))]
+    out.joinpath('SHA256SUMS').write_text('\n'.join(rows) + '\n')
+    out.joinpath('component-manifest.json').write_text('{"kind":"fixture"}\n')
 elif name != 'python3':
     raise AssertionError(name)
 '''
@@ -57,7 +61,7 @@ class DxvkBuildTest(unittest.TestCase):
         executable = self.bin / 'fake-tool'
         executable.write_text('#!' + sys.executable + '\n' + FAKE_TOOL)
         executable.chmod(0o755)
-        for name in ('git', 'meson', 'tar', 'sha256sum', 'python3'):
+        for name in ('git', 'meson', 'python3'):
             (self.bin / name).symlink_to(executable)
         self.calls = self.base / 'calls'
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
@@ -95,6 +99,8 @@ class DxvkBuildTest(unittest.TestCase):
                 if existing: self.output.mkdir()
                 result = self.build()
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.output / 'component-manifest.json').is_file())
+                self.assertEqual(list(self.output.glob('x*/*.dll.a')), [])
                 rows = (self.output / 'SHA256SUMS').read_text().splitlines()
                 self.assertEqual([row.split('  ')[1] for row in rows],
                                  ['x32/current.dll', 'x64/current.dll'])
@@ -115,6 +121,12 @@ class DxvkBuildTest(unittest.TestCase):
         after = {str(p.relative_to(self.output)): p.read_bytes()
                  for p in self.output.rglob('*') if p.is_file()}
         self.assertEqual(after, before)
+
+    def test_component_record_failure_fails_the_build(self):
+        self.env['FAIL_RECORD'] = '1'
+        result = self.build()
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertFalse((self.output / 'component-manifest.json').exists())
 
 
 if __name__ == '__main__':

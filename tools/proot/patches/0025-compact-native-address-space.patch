@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DroidDeck <droiddeck@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 00:00:00 +0000
+Subject: [PATCH] execve: opt in to compact native ARM64 mappings
+
+The native PIE and ELF interpreter at 192 and 252 GiB fragment a 39-bit
+address space. With PROOT_COMPACT_VA=1 in the tracer environment, place
+native ARM64 PIEs at 416 GiB and their interpreter at 424 GiB. This leaves
+almost 288 GiB between the unchanged PRoot loader and the native PIE,
+enough for a 256 GiB virtual reservation. The selected addresses remain
+below the Wine ARM64EC PE module area near 448 GiB.
+
+Only zero-based ET_DYN mappings are relocated. Fixed-address executables,
+32-bit ELF files, other machines, and the default layout are unchanged.
+The helper is copied into the source tree by DroidDeck's build.sh.
+---
+--- a/src/execve/enter.c
++++ b/src/execve/enter.c
+@@ -40,5 +40,6 @@
+ #include "execve/ldso.h"
+ #include "execve/elf.h"
++#include "execve/compact_va.h"
+ #include "path/path.h"
+ #include "path/temp.h"
+ #include "path/binding.h"
+@@ -338,7 +339,9 @@ static void compute_load_addresses(Tracee *tracee)
+ 			add_load_base(tracee->load_info, EXEC_PIC_ADDRESS_32);
+ 		else
+ #endif
+-		add_load_base(tracee->load_info, EXEC_PIC_ADDRESS);
++		add_load_base(tracee->load_info, dd_proot_pic_address(EXEC_PIC_ADDRESS,
++			ELF_CLASS(tracee->load_info->elf_header),
++			ELF_FIELD(tracee->load_info->elf_header, machine), 0));
+ 	}
+ 
+ 	/* Nothing more to do?  */
+@@ -352,7 +355,9 @@ static void compute_load_addresses(Tracee *tracee)
+ 			add_load_base(tracee->load_info->interp, INTERP_PIC_ADDRESS_32);
+ 		else
+ #endif
+-		add_load_base(tracee->load_info->interp, INTERP_PIC_ADDRESS);
++		add_load_base(tracee->load_info->interp, dd_proot_pic_address(INTERP_PIC_ADDRESS,
++			ELF_CLASS(tracee->load_info->interp->elf_header),
++			ELF_FIELD(tracee->load_info->interp->elf_header, machine), 1));
+ 	}
+ }
+ 

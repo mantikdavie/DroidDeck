@@ -41,6 +41,7 @@ fetch talloc.tar.gz "https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.t
   "https://distfiles.macports.org/talloc/talloc-${TALLOC_VERSION}.tar.gz"
 cp "$HERE/statx_mnt_id.h" "$WORK/proot/src/tracee/statx_mnt_id.h"
 cp "$HERE/profile.h" "$WORK/proot/src/syscall/profile.h"
+cp "$HERE/compact_va.h" "$WORK/proot/src/execve/compact_va.h"
 for patch in "$HERE"/patches/*.patch; do
   patch -d "$WORK/proot" -p1 --forward --quiet < "$patch"
 done

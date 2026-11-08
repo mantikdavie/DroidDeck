@@ -1,0 +1,35 @@
+--- a/src/dxvk/dxvk_shader.h
++++ b/src/dxvk/dxvk_shader.h
+@@ -114,6 +114,8 @@
+     SupportsResourceIndexing    = 20u,
+     /// Whether descriptor heap is used as the binding model.
+     SupportsDescriptorHeap      = 21u,
++    /// Whether to omit nonsemantic SPIR-V debug names.
++    OmitDebugNames              = 22u,
+   };
+ 
+   using DxvkShaderSpirvFlags = Flags<DxvkShaderSpirvFlag>;
+--- a/src/dxvk/dxvk_device.cpp
++++ b/src/dxvk/dxvk_device.cpp
+@@ -765,6 +765,10 @@
+     m_shaderOptions.minStorageBufferAlignment =
+       m_properties.core.properties.limits.minStorageBufferOffsetAlignment;
+ 
++    // PowerVR's proprietary compiler miscompiles repeated OpName strings.
++    if (m_adapter->matchesDriver(VK_DRIVER_ID_IMAGINATION_PROPRIETARY))
++      m_shaderOptions.spirv.set(DxvkShaderSpirvFlag::OmitDebugNames);
++
+     if (m_features.vk12.shaderFloat16)
+       m_shaderOptions.flags.set(DxvkShaderCompileFlag::Supports16BitArithmetic);
+ 
+--- a/src/dxvk/dxvk_shader_ir.cpp
++++ b/src/dxvk/dxvk_shader_ir.cpp
+@@ -2087,7 +2087,7 @@
+     // of features is supported; this avoids running into performance issues on
+     // Nvidia where just enabling RTE on FP32 causes a ~20% performance drop.
+     dxbc_spv::spirv::SpirvBuilder::Options options = { };
+-    options.includeDebugNames = true;
++    options.includeDebugNames = !m_info.options.spirv.test(DxvkShaderSpirvFlag::OmitDebugNames);
+     options.nvRawAccessChains = m_info.options.spirv.test(DxvkShaderSpirvFlag::SupportsNvRawAccessChains);
+     options.dualSourceBlending = linkage && linkage->fsDualSrcBlend;
+ 

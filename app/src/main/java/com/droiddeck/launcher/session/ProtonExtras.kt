@@ -3,11 +3,13 @@ package com.droiddeck.launcher.session
 import com.droiddeck.launcher.core.Hashes
 import com.droiddeck.launcher.R
 import android.content.Context
+import android.os.Build
 import android.os.StatFs
 import android.util.Log
 import com.droiddeck.launcher.core.Downloader
 import com.droiddeck.launcher.core.FileUtils
 import com.droiddeck.launcher.runtime.LinuxRuntime
+import com.droiddeck.launcher.runtime.ProotAddressSpace
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
@@ -282,6 +284,7 @@ object ProtonExtras {
             val hostEnv = process.environment()
             hostEnv["PROOT_LOADER"] = LinuxRuntime.prootLoader(context).path
             hostEnv["PROOT_TMP_DIR"] = LinuxRuntime.prootTempDir(context).path
+            hostEnv.putAll(ProotAddressSpace.hostEnv(Build.MANUFACTURER, Build.DEVICE))
             LinuxRuntime.prootLibraryPath(context).takeIf { it.isNotEmpty() }?.let { hostEnv["LD_LIBRARY_PATH"] = it }
             val child = process.start()
             var placed: String? = null

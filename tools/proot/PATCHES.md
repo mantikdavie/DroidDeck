@@ -133,6 +133,20 @@ Prototype (inert unless `PROOT_FASTPATH` is set; see `docs/development/proot-per
   emulated program with `execveat(fd, "/proc/self/exe")`, so x86 programs in a Flatpak sandbox, which
   does not carry the session's preloads, could not start other programs.
 
+- `0025-compact-native-address-space.patch` - `PROOT_COMPACT_VA=1` in the tracer environment
+  moves native ARM64 position-independent executables from 192 to 416 GiB and their ELF
+  interpreter from 252 to 424 GiB. On a 39-bit kernel, the stock placements split the space
+  needed by Digimon Story Time Stranger's 256 GiB snmalloc reservation. The new placements
+  leave almost 288 GiB above the unchanged PRoot loader, below the native executable, and
+  remain below the observed Wine ARM64EC PE module area near 448 GiB. Fixed-address ELF
+  mappings, 32-bit executables, other ELF machines, the fast-path trampoline, and sessions
+  without the exact opt-in value retain their original placement. `compact_va.h` is copied
+  into the source tree by `build.sh`.
+  On the Pixel `kodiak` 39-bit kernel, a native 256 GiB reservation probe changed from
+  `ENOMEM` to success, and Digimon's own reservation succeeded before reaching DXVK.
+  This fixes the initial allocation crash. The separate blank-rendering failure is addressed
+  by the PowerVR shader-debug-name workaround in `tools/dxvk/patches/0005-powervr-omit-shader-debug-names.patch`.
+
 Old kernel fixes:
 
 - `0015-lost-fork-events.patch` - works around a problem reported on Xiaomi's msm 4.14 kernel:

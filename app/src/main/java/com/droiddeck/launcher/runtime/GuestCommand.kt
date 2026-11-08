@@ -1,6 +1,7 @@
 package com.droiddeck.launcher.runtime
 
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import com.droiddeck.launcher.core.DownloadSource
 import com.droiddeck.launcher.core.HostProcess
@@ -60,6 +61,7 @@ object GuestCommand {
         builder.environment().apply {
             put("PROOT_LOADER", LinuxRuntime.prootLoader(context).path)
             put("PROOT_TMP_DIR", LinuxRuntime.prootTempDir(context).path)
+            putAll(ProotAddressSpace.hostEnv(Build.MANUFACTURER, Build.DEVICE))
             if (linkDir != null) put("PROOT_L2S_DIR", linkDir.path)
             if (SessionPrefs.prootNoSeccomp(context)) put("PROOT_NO_SECCOMP", "1")
             fastPathKey?.let { ProotFastPath.hostEnv(it).let { (k, v) -> put(k, v) } }

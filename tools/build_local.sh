@@ -440,7 +440,14 @@ if [[ "${DROIDDECK_STEAM_ONLY}" != true ]]; then
         save_step comet "${comet_key}" "${comet_out}"
     fi
 fi
-python3 tools/powervr/fetch.py
+powervr_args=()
+if [[ -n "${DROIDDECK_LOCAL_DXVK_COMPONENT:-}" ]]; then
+    powervr_args+=(--local-dxvk "${DROIDDECK_LOCAL_DXVK_COMPONENT}")
+fi
+if [[ -n "${DROIDDECK_LOCAL_HYBRIS_COMPONENT:-}" ]]; then
+    powervr_args+=(--local-hybris "${DROIDDECK_LOCAL_HYBRIS_COMPONENT}")
+fi
+python3 tools/powervr/fetch.py "${powervr_args[@]}"
 bash tools/packs/build.sh app/build/packs
 python3 tools/release/runtime_inputs.py record
 ./gradlew "${gradle_task}" --console=plain -PndkVersion="${ndk_version}" -PsteamOnly="${DROIDDECK_STEAM_ONLY}" ${gradle_rust_arg}

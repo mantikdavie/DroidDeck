@@ -3,6 +3,7 @@ package com.droiddeck.launcher.runtime
 import android.content.Context
 import android.net.LocalServerSocket
 import android.net.LocalSocket
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Log
@@ -125,6 +126,7 @@ object RootSpawner {
             clear()
             put("PROOT_LOADER", LinuxRuntime.prootLoader(context).path)
             put("PROOT_TMP_DIR", LinuxRuntime.prootTempDir(context).path)
+            putAll(ProotAddressSpace.hostEnv(Build.MANUFACTURER, Build.DEVICE))
             if (SessionPrefs.prootNoSeccomp(context)) put("PROOT_NO_SECCOMP", "1")
             LinuxRuntime.prootLibraryPath(context).takeIf { it.isNotEmpty() }?.let { put("LD_LIBRARY_PATH", it) }
         }

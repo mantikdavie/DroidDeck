@@ -4,9 +4,12 @@
 Like DirectAudio, APK builds download published components rather than compile
 them. Their source, licenses and patches travel with the payload. Build recipes
 remain in tools/{hybris,dxvk,vulkan-wsi}; release.json pins their reviewed inputs.
+An explicit --local-dxvk directory replaces only DXVK with a verified local build.
+An explicit --local-hybris directory replaces only its verified compatibility layer.
 """
 import argparse
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -23,7 +26,15 @@ from zipfile import ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location("dxvk_component", ROOT / "tools/dxvk/component.py")
+local_dxvk = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(local_dxvk)
+_spec = importlib.util.spec_from_file_location("hybris_component", ROOT / "tools/hybris/component.py")
+local_hybris = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(local_hybris)
 ASSETS = Path("app/src/main/assets/hybris")
+HYBRIS_LAYER = "lib/libVkLayer_hybris_compat.so"
+HYBRIS_BASE_LAYER = "provenance/hybris-original-compat-layer.so"
 REQUIRED_LIBRARIES = (
     "lib/libhybris-vulkan-icd.so.0", "lib/libhybris-common.so.1",
     "lib/libhybris/linker/q.so", "lib/libVkLayer_hybris_compat.so",
@@ -107,23 +118,41 @@ def tree_digest(entries):
                              for name, (kind, mode, data) in sorted(entries.items())}))
 
 
-def load_release(root):
+def load_release(root, local_manifest=None):
     release = json.loads((root / "tools/powervr/release.json").read_bytes())
     if release.get("format") != 1:
         raise ValueError("unsupported PowerVR release pins")
     # These identify the reviewed recipe, not a new attestation from the old
     # producer. The original build metadata is preserved inside the runtime.
     for component in [release["hybris"], *release["archives"]]:
+        if local_manifest is not None and component.get("id") == "dxvk":
+            continue
         for name, expected in component["recipe_inputs"].items():
             if sha256((root / name).read_bytes()) != expected:
                 raise ValueError("PowerVR component recipe changed; update its release pin: " + name)
+    if local_manifest is not None:
+        if sum(component.get("id") == "dxvk" for component in release["archives"]) != 1:
+            raise ValueError("local DXVK requires exactly one default DXVK component")
+        pins = [{"name": name, "path": target, "mode": 0o755 if name in local_dxvk.DLLS else 0o644,
+                 **local_manifest["files"][name]} for name, target in local_dxvk.DESTINATIONS.items()]
+        data = json_bytes(local_manifest)
+        pins.append({"name": local_dxvk.MANIFEST, "path": local_dxvk.MANIFEST_DESTINATION,
+                     "mode": 0o644, "size": len(data), "sha256": sha256(data)})
+        release["archives"] = [dict(id="dxvk", kind="local-build", files=pins)
+                               if component.get("id") == "dxvk" else component
+                               for component in release["archives"]]
     return release
 
 
-def assembly_inputs(root):
-    return {"format": 1, "inputs": {
+def assembly_inputs(root, local_manifest=None, hybris_manifest=None):
+    result = {"format": 1, "inputs": {
         name: sha256((root / name).read_bytes()) for name in
         ("tools/powervr/release.json", "tools/powervr/fetch.py", "tools/hybris/run-proton.py", *BUNDLED_LICENSES)}}
+    components = {name: sha256(json_bytes(manifest)) for name, manifest in
+                  (("dxvk", local_manifest), ("hybris", hybris_manifest)) if manifest is not None}
+    if components:
+        result["local_components"] = components
+    return result
 
 
 def fetch(component, cache):
@@ -239,9 +268,33 @@ def read_component(data, component):
     raise ValueError("unsupported component archive format: " + kind)
 
 
-def check_bundle(entries, release, root):
+def embedded_local_manifest(entries, root, component=local_dxvk):
+    name = component.MANIFEST_DESTINATION
+    if name not in entries:
+        return None
+    data = read(entries, name)
+    manifest = json.loads(data)
+    if entries[name][:2] != ("file", 0o644) or data != json_bytes(manifest):
+        raise ValueError("invalid embedded local component manifest: " + name)
+    component.verify_files({name: read(entries, target) for name, target in component.DESTINATIONS.items()},
+                           manifest, root)
+    return manifest
+
+
+def hybris_entries(files, manifest):
+    additions = {target: ("file", 0o755 if target == HYBRIS_LAYER else 0o644, files[name])
+                 for name, target in local_hybris.DESTINATIONS.items()}
+    additions[local_hybris.MANIFEST_DESTINATION] = ("file", 0o644, json_bytes(manifest))
+    return additions
+
+
+def check_bundle(entries, release, root, local_manifest=None, hybris_manifest=None):
     check_tree(entries)
-    if read(entries, "assembly-inputs.json") != json_bytes(assembly_inputs(root)):
+    if embedded_local_manifest(entries, root) != local_manifest:
+        raise ValueError("unexpected local DXVK component")
+    if embedded_local_manifest(entries, root, local_hybris) != hybris_manifest:
+        raise ValueError("unexpected local hybris component")
+    if read(entries, "assembly-inputs.json") != json_bytes(assembly_inputs(root, local_manifest, hybris_manifest)):
         raise ValueError("PowerVR assembly inputs changed; run tools/powervr/fetch.py")
     if entries["run-proton.py"] != ("file", 0o755, (root / "tools/hybris/run-proton.py").read_bytes()):
         raise ValueError("PowerVR Proton wrapper is stale or not executable")
@@ -260,6 +313,17 @@ def check_bundle(entries, release, root):
             del bridge[pin["path"]]
     for target in BUNDLED_LICENSES.values():
         bridge.pop(target, None)
+    if hybris_manifest is not None:
+        files = {name: read(entries, target) for name, target in local_hybris.DESTINATIONS.items()}
+        for target, expected in hybris_entries(files, hybris_manifest).items():
+            if entries[target] != expected:
+                raise ValueError("PowerVR local hybris component mode or type mismatch: " + target)
+            del bridge[target]
+        original = bridge.pop(HYBRIS_BASE_LAYER, None)
+        if original is None or original[0] != "file":
+            raise ValueError("missing original pinned hybris compatibility layer")
+        # Restore the replaced entry before checking the entire pinned base tree.
+        bridge[HYBRIS_LAYER] = original
     if tree_digest(bridge) != release["hybris"]["tree_sha256"]:
         raise ValueError("PowerVR bridge differs from the pinned archive")
     for name in REQUIRED_LIBRARIES:
@@ -306,10 +370,12 @@ def pack(entries):
 
 
 def verify_archive(archive, version, root=ROOT):
-    release = load_release(root)
     if sha256(archive) != version.strip():
         raise ValueError("PowerVR runtime archive checksum mismatch")
-    check_bundle(read_tar(archive), release, root)
+    entries = read_tar(archive)
+    manifest = embedded_local_manifest(entries, root)
+    hybris_manifest = embedded_local_manifest(entries, root, local_hybris)
+    check_bundle(entries, load_release(root, manifest), root, manifest, hybris_manifest)
 
 
 def verify(root=ROOT):
@@ -317,15 +383,31 @@ def verify(root=ROOT):
                    (root / ASSETS / "version.txt").read_text(), root)
 
 
-def assemble(root, cache):
-    release = load_release(root)
+def assemble(root, cache, local_component=None, local_hybris_component=None):
+    files, manifest = local_dxvk.read_directory(local_component, root) if local_component is not None else ({}, None)
+    hybris_files, hybris_manifest = (local_hybris.read_directory(local_hybris_component, root)
+                                    if local_hybris_component is not None else ({}, None))
+    release = load_release(root, manifest)
     entries = read_tar(fetch(release["hybris"], cache))
     if tree_digest(entries) != release["hybris"]["tree_sha256"]:
         raise ValueError("PowerVR bridge tree checksum mismatch")
     for component in release["archives"]:
-        additions = read_component(fetch(component, cache), component)
+        if component.get("kind") == "local-build":
+            payload = dict(files, **{local_dxvk.MANIFEST: json_bytes(manifest)})
+            additions = {pin["path"]: ("file", pin["mode"], payload[pin["name"]]) for pin in component["files"]}
+        else:
+            additions = read_component(fetch(component, cache), component)
         if set(entries) & set(additions):
             raise ValueError("component overwrites existing runtime files")
+        entries.update(additions)
+    if hybris_manifest is not None:
+        original = entries.get(HYBRIS_LAYER)
+        if original is None or original[0] != "file":
+            raise ValueError("pinned hybris compatibility layer must be a regular file")
+        additions = hybris_entries(hybris_files, hybris_manifest)
+        additions[HYBRIS_BASE_LAYER] = original
+        if (set(entries) & set(additions)) - {HYBRIS_LAYER}:
+            raise ValueError("local hybris component overwrites another runtime file")
         entries.update(additions)
     for source, target in BUNDLED_LICENSES.items():
         license_entry = ("file", 0o644, (root / source).read_bytes())
@@ -333,8 +415,8 @@ def assemble(root, cache):
             raise ValueError("bundled license overwrites component file: " + target)
         entries[target] = license_entry
     entries["run-proton.py"] = ("file", 0o755, (root / "tools/hybris/run-proton.py").read_bytes())
-    entries["assembly-inputs.json"] = ("file", 0o644, json_bytes(assembly_inputs(root)))
-    check_bundle(entries, release, root)
+    entries["assembly-inputs.json"] = ("file", 0o644, json_bytes(assembly_inputs(root, manifest, hybris_manifest)))
+    check_bundle(entries, release, root, manifest, hybris_manifest)
     archive = pack(entries)
     assets = root / ASSETS
     assets.mkdir(parents=True, exist_ok=True)
@@ -347,19 +429,24 @@ def assemble(root, cache):
         (assets / "version.txt").unlink(missing_ok=True)
         os.replace(stage / "runtime.tzst", assets / "runtime.tzst")
         os.replace(stage / "version.txt", assets / "version.txt")
-    print("PowerVR runtime prepared: " + sha256(archive))
+    selected = [name for name, value in (("DXVK", manifest), ("hybris compatibility layer", hybris_manifest)) if value]
+    print("PowerVR runtime prepared" + (" (local " + ", ".join(selected) + ")" if selected else "") + ": " + sha256(archive))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--local-dxvk", type=Path, help="use a verified local tools/dxvk/build.sh output directory")
+    parser.add_argument("--local-hybris", type=Path, help="use a verified local hybris compatibility-layer component")
     parser.add_argument("--cache-dir", type=Path, default=Path(os.environ.get(
         "DROIDDECK_BUILD_CACHE", str(Path.home() / ".cache/droiddeck-build"))))
     args = parser.parse_args()
+    if args.verify and (args.local_dxvk is not None or args.local_hybris is not None):
+        parser.error("--verify reads embedded provenance; local component options are only for assembly")
     if args.verify:
         verify()
     else:
-        assemble(ROOT, args.cache_dir)
+        assemble(ROOT, args.cache_dir, args.local_dxvk, args.local_hybris)
 
 
 if __name__ == "__main__":

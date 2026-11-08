@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI component build; this does not change the APK or an installed Proton depot.
+# Component build; this does not change the APK or an installed Proton depot.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 . "$root/tools/dxvk/source.env"
@@ -33,10 +33,8 @@ for arch in 32 64; do
     --buildtype release --prefix "$out" --bindir "x$arch" --libdir "x$arch" -Db_ndebug=if-release --strip
   meson compile -C "$work/build$arch" -j 4
   meson install -C "$work/build$arch"
+  for library in d3d8 d3d9 d3d10core d3d11 dxgi; do
+    rm -f "$out/x$arch/$library.dll.a"
+  done
 done
-cp "$work/source/LICENSE" "$out/LICENSE"
-printf '%s\n' "$DXVK_REVISION" > "$out/source-commit"
-git -C "$work/source" submodule status --recursive > "$out/submodules.txt"
-git -C "$work/source" diff > "$out/downstream.patch"
-tar --exclude-vcs --zstd -cf "$out/source.tar.zst" -C "$work/source" .
-(cd "$out" && find x32 x64 -name '*.dll' -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+python3 "$root/tools/dxvk/component.py" record "$out" --source "$work/source"

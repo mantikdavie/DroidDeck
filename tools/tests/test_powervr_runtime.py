@@ -286,6 +286,254 @@ class PowerVRRuntimeTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     runtime.read_zip(stream.getvalue(), {'files': [], 'ignored': ['allowed']})
 
+    def local_component(self):
+        local = runtime.local_dxvk
+        source_revision = '1' * 40
+        for name, data in {
+            'build.sh': b'local build recipe', 'component.py': b'local component verifier',
+            'source.env': ('DXVK_REVISION=' + source_revision + '\n').encode(),
+            'patches/0001-fix.patch': b'local source patch',
+        }.items():
+            path = self.root / 'tools/dxvk' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        directory = self.root / 'local-dxvk'
+        files = {name: pe(name.split('/')[0]) + b'local' for name in local.DLLS}
+        submodules = ' ' + '2' * 40 + ' subprojects/compiler\n'
+        files.update({'LICENSE': b'local license', 'source-commit': (source_revision + '\n').encode(),
+                      'submodules.txt': submodules.encode(), 'downstream.patch': b'local source patch',
+                      'source.tar.zst': b'local source archive'})
+        files['SHA256SUMS'] = local.checksums(files)
+        manifest = {'format': 1, 'kind': 'local-build',
+                    'source': {'revision': source_revision, 'patched_tree': '3' * 40, 'submodules': submodules},
+                    'recipe_inputs': local.recipe_inputs(self.root),
+                    'toolchain': {name: 'fixture version 1' for name in local.TOOL_COMMANDS},
+                    'files': {name: {'size': len(data), 'sha256': runtime.sha256(data)} for name, data in files.items()}}
+        for name, data in {**files, local.MANIFEST: runtime.json_bytes(manifest)}.items():
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        graphics = self.release['archives'][0]
+        dxvk = dict(graphics, id='dxvk', files=[pin for pin in graphics['files'] if pin['path'].startswith('dxvk/')])
+        dxvk['ignored'] = [pin['name'] for pin in graphics['files'] if not pin['path'].startswith('dxvk/')]
+        dxvk['recipe_inputs'] = {'tools/dxvk/build.sh': runtime.sha256(b'old published recipe')}
+        wsi = dict(graphics, id='wsi', files=[pin for pin in graphics['files'] if pin['path'].startswith('wsi/')])
+        wsi['ignored'] = [pin['name'] for pin in graphics['files'] if not pin['path'].startswith('wsi/')]
+        self.release['archives'] = [dxvk, wsi]
+        self.pins.write_bytes(runtime.json_bytes(self.release))
+        return directory, manifest
+
+    def test_local_dxvk_is_explicit_reproducible_and_embeds_source_provenance(self):
+        directory, manifest = self.local_component()
+        pins_before = self.pins.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            runtime.assemble(self.root, self.cache)
+        with patch.object(runtime, 'urlopen', side_effect=AssertionError('no download expected')):
+            runtime.assemble(self.root, self.cache, directory)
+        first = (self.root / runtime.ASSETS / 'runtime.tzst').read_bytes()
+        runtime.verify(self.root)
+        runtime.assemble(self.root, self.cache, directory)
+        self.assertEqual(first, (self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        self.assertEqual(pins_before, self.pins.read_bytes())
+        entries = runtime.read_tar(first)
+        self.assertEqual(runtime.embedded_local_manifest(entries, self.root), manifest)
+        for source, target in runtime.local_dxvk.DESTINATIONS.items():
+            self.assertEqual(runtime.read(entries, target), (directory / source).read_bytes())
+        self.assertEqual(runtime.read(entries, 'wsi/libVkLayer_window_system_integration.so'), elf())
+
+    def test_local_dxvk_does_not_bypass_other_component_pins(self):
+        directory, _ = self.local_component()
+        (self.root / 'tools/hybris/source.env').write_bytes(b'changed bridge recipe')
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            runtime.assemble(self.root, self.cache, directory)
+
+    def test_local_dxvk_recipe_change_rejects_existing_component_and_runtime(self):
+        directory, _ = self.local_component()
+        runtime.assemble(self.root, self.cache, directory)
+        (self.root / 'tools/dxvk/patches/0001-fix.patch').write_bytes(b'new fix')
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            runtime.assemble(self.root, self.cache, directory)
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            runtime.verify(self.root)
+
+    def test_local_dxvk_missing_license_extra_file_symlink_and_tamper_are_rejected(self):
+        directory, _ = self.local_component()
+        license_path = directory / 'LICENSE'
+        original = license_path.read_bytes()
+        for mutation in ('missing', 'symlink', 'tamper', 'extra'):
+            with self.subTest(mutation=mutation):
+                if mutation == 'missing':
+                    license_path.unlink()
+                elif mutation == 'symlink':
+                    license_path.unlink()
+                    license_path.symlink_to(directory / 'source-commit')
+                elif mutation == 'tamper':
+                    license_path.write_bytes(b'changed')
+                else:
+                    (directory / 'extra.dll').write_bytes(b'unlisted')
+                with self.assertRaises(ValueError):
+                    runtime.assemble(self.root, self.cache, directory)
+                license_path.unlink(missing_ok=True)
+                license_path.write_bytes(original)
+                (directory / 'extra.dll').unlink(missing_ok=True)
+
+    def test_local_dxvk_wrong_pe_architecture_rejected_even_with_updated_manifest(self):
+        directory, manifest = self.local_component()
+        local = runtime.local_dxvk
+        name = 'x32/d3d11.dll'
+        (directory / name).write_bytes(pe('x64'))
+        files = {path: (directory / path).read_bytes() for path in local.DESTINATIONS}
+        files['SHA256SUMS'] = local.checksums(files)
+        (directory / 'SHA256SUMS').write_bytes(files['SHA256SUMS'])
+        for path in (name, 'SHA256SUMS'):
+            manifest['files'][path] = {'size': len(files[path]), 'sha256': runtime.sha256(files[path])}
+        (directory / local.MANIFEST).write_bytes(runtime.json_bytes(manifest))
+        with self.assertRaisesRegex(ValueError, 'wrong PE architecture'):
+            runtime.assemble(self.root, self.cache, directory)
+
+    def test_local_dxvk_payload_tamper_rejected_with_updated_outer_checksum(self):
+        directory, _ = self.local_component()
+        runtime.assemble(self.root, self.cache, directory)
+        entries = runtime.read_tar((self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        entries['dxvk/x64/d3d11.dll'] = ('file', 0o755, pe('x64') + b'changed')
+        archive = runtime.pack(entries)
+        with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            runtime.verify_archive(archive, runtime.sha256(archive), self.root)
+
+    def local_hybris_component(self):
+        local = runtime.local_hybris
+        revision, headers = '4' * 40, '5' * 40
+        recipes = {
+            'component.py': b'local hybris verifier', 'build_layer.py': b'local layer build',
+            'build_runtime.sh': b'pinned full bridge recipe',
+            'source.env': ('HYBRIS_REVISION=' + revision + '\n').encode(),
+            'layer-source.env': ('VULKAN_HEADERS_REVISION=' + headers + '\n').encode(),
+            'powervr-hal-version.patch': b'pinned HAL patch',
+            'patches/0001-profile.patch': b'pinned BC profile',
+        }
+        for name, content in recipes.items():
+            path = self.root / 'tools/hybris' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.release['hybris']['recipe_inputs'] = {
+            'tools/hybris/' + name: runtime.sha256(recipes[name])
+            for name in ('source.env', 'build_runtime.sh')}
+        self.pins.write_bytes(runtime.json_bytes(self.release))
+        library = bytearray(elf())
+        library[16:18] = b'\x03\x00'
+        build = {'format': 1, 'scope': 'compat-layer-only',
+                 'toolchain': dict(compiler='fixture compiler', target='aarch64-linux-gnu',
+                                   linker='fixture linker', strip='fixture strip', zstd='fixture zstd'),
+                 'sources': {'compat/bc_transfer.c': '6' * 64},
+                 'compile_flags': ['-O2'], 'link_flags': ['-shared']}
+        files = {name: ('local provenance: ' + name).encode() for name in local.DESTINATIONS}
+        files.update({local.LAYER: bytes(library) + b'local layer',
+                      'source-commit': (revision + '\n').encode(),
+                      'headers-source-commit': (headers + '\n').encode(),
+                      'build-info.json': runtime.json_bytes(build)})
+        files['SHA256SUMS'] = local.checksums(files)
+        manifest = {'format': 1, 'kind': 'local-compat-layer',
+                    'base': local.base_identity(self.root),
+                    'source': {'revision': revision, 'patched_tree': '7' * 40},
+                    'headers': {'revision': headers, 'patched_tree': '8' * 40},
+                    'recipe_inputs': local.recipe_inputs(self.root),
+                    'files': {name: {'size': len(data), 'sha256': runtime.sha256(data)}
+                              for name, data in files.items()}}
+        directory = self.root / 'local-hybris'
+        directory.mkdir()
+        for name, data in {**files, local.MANIFEST: runtime.json_bytes(manifest)}.items():
+            (directory / name).write_bytes(data)
+        return directory, manifest
+
+    def test_local_hybris_replaces_only_layer_and_preserves_pinned_base(self):
+        directory, manifest = self.local_hybris_component()
+        pins_before = self.pins.read_bytes()
+        original = self.assembled()
+        pinned_archive = (self.root / runtime.ASSETS / 'runtime.tzst').read_bytes()
+        with patch.object(runtime, 'urlopen', side_effect=AssertionError('no download expected')):
+            runtime.assemble(self.root, self.cache, local_hybris_component=directory)
+        archive = (self.root / runtime.ASSETS / 'runtime.tzst').read_bytes()
+        entries = runtime.read_tar(archive)
+        runtime.verify(self.root)
+        self.assertEqual(entries[runtime.HYBRIS_BASE_LAYER], original[runtime.HYBRIS_LAYER])
+        self.assertEqual(runtime.embedded_local_manifest(entries, self.root, runtime.local_hybris), manifest)
+        for source, target in runtime.local_hybris.DESTINATIONS.items():
+            self.assertEqual(runtime.read(entries, target), (directory / source).read_bytes())
+        for name, entry in original.items():
+            if name not in (runtime.HYBRIS_LAYER, 'assembly-inputs.json'):
+                self.assertEqual(entries[name], entry)
+        runtime.assemble(self.root, self.cache, local_hybris_component=directory)
+        self.assertEqual(archive, (self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        runtime.assemble(self.root, self.cache)
+        self.assertEqual(pinned_archive, (self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        self.assertEqual(pins_before, self.pins.read_bytes())
+
+    def test_local_hybris_still_verifies_every_original_bridge_entry(self):
+        directory, _ = self.local_hybris_component()
+        runtime.assemble(self.root, self.cache, local_hybris_component=directory)
+        original = runtime.read_tar((self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        cases = [
+            (runtime.HYBRIS_BASE_LAYER, ('file', 0o755, elf() + b'changed original')),
+            (runtime.HYBRIS_BASE_LAYER, ('file', 0o644, elf())),
+            ('lib/libhybris-common.so.1.0.0', ('file', 0o755, elf() + b'changed bridge')),
+            ('lib/libhybris-common.so.1', ('file', 0o755, elf())),
+            ('lib/unpinned.so', ('file', 0o755, elf())),
+        ]
+        for name, entry in cases:
+            with self.subTest(name=name, kind=entry[0]):
+                entries = dict(original, **{name: entry})
+                archive = runtime.pack(entries)
+                with self.assertRaisesRegex(ValueError, 'bridge differs'):
+                    runtime.verify_archive(archive, runtime.sha256(archive), self.root)
+        del original[runtime.HYBRIS_BASE_LAYER]
+        archive = runtime.pack(original)
+        with self.assertRaisesRegex(ValueError, 'missing original pinned'):
+            runtime.verify_archive(archive, runtime.sha256(archive), self.root)
+
+    def test_local_hybris_payload_and_provenance_tamper_are_rejected(self):
+        directory, _ = self.local_hybris_component()
+        runtime.assemble(self.root, self.cache, local_hybris_component=directory)
+        original = runtime.read_tar((self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        for name in (runtime.HYBRIS_LAYER, 'licenses/hybris-local/source.tar.zst'):
+            with self.subTest(name=name):
+                entries = dict(original)
+                kind, mode, data = entries[name]
+                entries[name] = (kind, mode, data + b'tampered')
+                archive = runtime.pack(entries)
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    runtime.verify_archive(archive, runtime.sha256(archive), self.root)
+        entries = dict(original)
+        entries[runtime.HYBRIS_LAYER] = ('file', 0o644, runtime.read(entries, runtime.HYBRIS_LAYER))
+        archive = runtime.pack(entries)
+        with self.assertRaisesRegex(ValueError, 'mode or type mismatch'):
+            runtime.verify_archive(archive, runtime.sha256(archive), self.root)
+
+    def test_local_hybris_does_not_bypass_base_recipe_pins(self):
+        directory, _ = self.local_hybris_component()
+        runtime.assemble(self.root, self.cache, local_hybris_component=directory)
+        (self.root / 'tools/hybris/build_runtime.sh').write_bytes(b'changed full bridge recipe')
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            runtime.assemble(self.root, self.cache, local_hybris_component=directory)
+        with self.assertRaisesRegex(ValueError, 'recipe changed'):
+            runtime.verify(self.root)
+
+    def test_local_hybris_and_dxvk_can_be_selected_together(self):
+        dxvk, dxvk_manifest = self.local_component()
+        hybris, hybris_manifest = self.local_hybris_component()
+        pins_before = self.pins.read_bytes()
+        runtime.assemble(self.root, self.cache, dxvk, hybris)
+        runtime.verify(self.root)
+        entries = runtime.read_tar((self.root / runtime.ASSETS / 'runtime.tzst').read_bytes())
+        self.assertEqual(json.loads(runtime.read(entries, 'assembly-inputs.json'))['local_components'], {
+            'dxvk': runtime.sha256(runtime.json_bytes(dxvk_manifest)),
+            'hybris': runtime.sha256(runtime.json_bytes(hybris_manifest)),
+        })
+        self.assertEqual(pins_before, self.pins.read_bytes())
+        entries['lib/libhybris-common.so.1.0.0'] = ('file', 0o755, elf() + b'tampered')
+        archive = runtime.pack(entries)
+        with self.assertRaisesRegex(ValueError, 'bridge differs'):
+            runtime.verify_archive(archive, runtime.sha256(archive), self.root)
+
 
 if __name__ == '__main__':
     unittest.main()

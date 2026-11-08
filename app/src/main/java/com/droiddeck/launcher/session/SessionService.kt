@@ -47,6 +47,7 @@ import com.droiddeck.launcher.input.SteamControllerBle
 import com.droiddeck.launcher.runtime.BwrapSpawner
 import com.droiddeck.launcher.runtime.LinuxNetworkLinkComponent
 import com.droiddeck.launcher.runtime.LinuxRuntime
+import com.droiddeck.launcher.runtime.ProotAddressSpace
 import com.droiddeck.launcher.runtime.ProotFastPath
 import com.droiddeck.launcher.runtime.UserApps
 import com.droiddeck.launcher.wayland.WaylandCompositor
@@ -695,6 +696,7 @@ class SessionService : Service() {
         val hostEnv = HostEnvironment()
         hostEnv["PROOT_LOADER"] = LinuxRuntime.prootLoader(this).path
         hostEnv["PROOT_TMP_DIR"] = LinuxRuntime.prootTempDir(this).path
+        ProotAddressSpace.hostEnv(Build.MANUFACTURER, Build.DEVICE).forEach { (key, value) -> hostEnv[key] = value }
         if (SessionPrefs.prootNoSeccomp(this)) {
             hostEnv["PROOT_NO_SECCOMP"] = "1"
             Log.i(TAG, "proot: seccomp acceleration off by request")
