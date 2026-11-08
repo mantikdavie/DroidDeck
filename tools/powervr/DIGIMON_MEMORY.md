@@ -147,3 +147,46 @@ dependencies, alignment and v1/v2/v3 signatures passed verification. Diagnostic
 DSOs and counters are excluded from that APK. Local evidence and the candidate
 APK receipt are under ignored `build/device/digimon-perf-r8/`; reproducible
 source regressions are checked in under `tools/hybris/tests/`.
+
+## Fixed-camera follow-up (r9)
+
+Sessions 52 (descriptor-reuse baseline) and 54 (indexed) loaded the same save
+and used the same graphics settings, including Low textures and density. The
+runtime checks confirmed the intended non-profile DSOs (`6addfed4...` and
+`396552bd...`), no profiling override, identical graphics-file hashes and the
+same `fps,cs` HUD. Before/after screenshots independently confirmed the same
+alley geometry, camera and player position at both ends of each measurement. Idle
+animations and NPC activity differed; this was not an identical-frame replay.
+Session 53 was abandoned before measurement after the camera moved.
+
+Each run recorded two consecutive display-pacing windows:
+
+| Layer | Window | Presented frames / reported seconds | Reported FPS | Sampled GPU median |
+| --- | ---: | ---: | ---: | ---: |
+| Descriptor reuse | 1 | 387 / 20.1 | 19.3 | 911.5 MHz |
+| Descriptor reuse | 2 | 325 / 20.1 | 16.2 | 748 MHz |
+| Indexed | 1 | 451 / 20.1 | 22.5 | 1,094 MHz |
+| Indexed | 2 | 405 / 20.0 | 20.2 | 940 MHz |
+
+Combining the reported frame counts and rounded durations gives approximately
+17.7 FPS for the baseline and 21.3 FPS for indexed. Separate ten-second samples
+measured `dxvk-cs` at 78.2% and 54.4% of one CPU core respectively; both game
+processes had zero swap. These are observations from this scene, not isolated
+measurements of the patch's frame-rate or CPU benefit.
+
+Hardware conditions were not fixed. Baseline GPU samples fell from 1,017 to
+691 MHz; indexed samples ranged from 940 to 1,094 MHz and ended at 1,017 MHz.
+Battery readings changed from 40.3 to 40.4 degrees Celsius for baseline and
+40.6 to 40.8 for indexed. Both runs went from `MODERATE` to `SEVERE` thermal
+status, while the recorded policy-6 CPU maximum was 4.013 GHz for baseline and
+4.109 GHz for indexed. These readings do not establish why GPU frequency
+changed, and maximum CPU limits do not describe actual per-thread clocks.
+The higher indexed frame rate therefore cannot be attributed solely to lookup
+indexing or generalized into a percentage speedup. The direct evidence for
+indexing remains shorter lookup traversals, lower sampled per-call cost and
+the equivalence/lifecycle regressions above.
+
+Local screenshots, runtime identities, frame pacing, frequency samples, thermal
+readings and thread samples are under ignored `build/device/digimon-perf-r9/`,
+in the final `baseline-*` and `indexed-*` measurement files. Earlier loading
+screens and filename-only "ready" labels are not measurement evidence.
